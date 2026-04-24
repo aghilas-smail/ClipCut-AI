@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClipCut AI — YouTube → TikTok en 1 clic</title>
+  <style>
+    /* ── Reset & Base ───────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0a0a0f;
+      --surface:  #13131a;
+      --card:     #1c1c28;
+      --border:   #2a2a3a;
+      --accent:   #7c3aed;
+      --accent2:  #a855f7;
+      --tiktok:   #fe2c55;
+      --tiktok2:  #25f4ee;
+      --text:     #f1f1f3;
+      --muted:    #8b8ba3;
+      --success:  #22c55e;
+      --radius:   14px;
+      --font: 'Inter', 'Segoe UI', system-ui, sans-serif;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Gradient orb ────────────────────────────────────────────────── */
+    .orb {
+      position: fixed; pointer-events: none; z-index: 0;
+      border-radius: 50%; filter: blur(120px); opacity: .25;
+    }
+    .orb-1 { width: 600px; height: 600px; background: var(--accent); top: -200px; left: -200px; }
+    .orb-2 { width: 500px; height: 500px; background: var(--tiktok); bottom: -150px; right: -150px; }
+
+    /* ── Nav ─────────────────────────────────────────────────────────── */
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 40px;
+      background: rgba(10,10,15,.8);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .logo {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 1.25rem; font-weight: 800; letter-spacing: -.02em;
+    }
+    .logo-icon {
+      width: 36px; height: 36px; border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), var(--tiktok));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .badge {
+      font-size: .7rem; font-weight: 700; padding: 3px 8px;
+      background: linear-gradient(135deg, var(--accent), var(--tiktok));
+      border-radius: 20px; letter-spacing: .05em;
+    }
+
+    /* ── Hero ────────────────────────────────────────────────────────── */
+    .hero {
+      position: relative; z-index: 1;
+      text-align: center; padding: 80px 24px 60px;
+    }
+    .hero-tag {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: .8rem; font-weight: 600; padding: 6px 14px;
+      border: 1px solid var(--border); border-radius: 20px;
+      color: var(--muted); margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-size: clamp(2.2rem, 5vw, 3.8rem);
+      font-weight: 900; line-height: 1.1; letter-spacing: -.03em;
+      max-width: 800px; margin: 0 auto 20px;
+    }
+    .hero h1 span {
+      background: linear-gradient(135deg, var(--accent2), var(--tiktok));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .hero p {
+      color: var(--muted); font-size: 1.1rem;
+      max-width: 540px; margin: 0 auto 40px; line-height: 1.6;
+    }
+    .steps {
+      display: flex; justify-content: center; gap: 32px;
+      flex-wrap: wrap; margin-bottom: 48px;
+    }
+    .step {
+      display: flex; align-items: center; gap: 8px;
+      font-size: .9rem; color: var(--muted);
+    }
+    .step-num {
+      width: 24px; height: 24px; border-radius: 50%;
+      background: var(--card); border: 1px solid var(--border);
+      font-size: .75rem; font-weight: 700; color: var(--accent2);
+      display: flex; align-items: center; justify-content: center;
+    }
+
+    /* ── Main card ───────────────────────────────────────────────────── */
+    .card {
+      position: relative; z-index: 1;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius);
+      max-width: 700px; margin: 0 auto 60px;
+      padding: 36px 40px;
+    }
+    @media (max-width: 600px) { .card { padding: 24px 20px; } }
+    .card-title {
+      font-size: 1.1rem; font-weight: 700; margin-bottom: 28px;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    /* ── Form ────────────────────────────────────────────────────────── */
+    .form-group { margin-bottom: 20px; }
+    label {
+      display: block; font-size: .85rem; font-weight: 600;
+      color: var(--muted); margin-bottom: 8px;
+    }
+    .input-wrap { position: relative; }
+    .input-wrap .icon {
+      position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      font-size: 16px; pointer-events: none;
+    }
+    input[type="text"], input[type="password"], select {
+      width: 100%; padding: 14px 14px 14px 44px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text); font-size: .95rem;
+      outline: none; transition: border-color .2s, box-shadow .2s;
+      font-family: var(--font);
+    }
+    select { padding-left: 14px; }
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124,58,237,.2);
+    }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+
+    /* ── Style picker ─────────────────────────────────────────────────── */
+    .style-card {
+      border: 2px solid var(--border); border-radius: 12px;
+      padding: 10px; cursor: pointer; transition: border-color .2s, transform .15s;
+      background: var(--surface);
+    }
+    .style-card:hover { border-color: var(--accent2); transform: translateY(-2px); }
+    .style-card.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,58,237,.25); }
+    .style-preview {
+      border-radius: 8px; padding: 10px 8px;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 52px; margin-bottom: 8px;
+    }
+    .style-label { font-size: .8rem; font-weight: 600; color: var(--muted); }
+
+    /* ── Toggle switch ────────────────────────────────────────────────── */
+    .toggle-wrap {
+      display: flex; align-items: center; gap: 10px;
+      cursor: pointer; user-select: none;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 10px 16px;
+      flex: 1; min-width: 180px;
+    }
+    .toggle-wrap input { display: none; }
+    .toggle-slider {
+      width: 40px; height: 22px; background: var(--border);
+      border-radius: 11px; position: relative; flex-shrink: 0;
+      transition: background .2s;
+    }
+    .toggle-slider::after {
+      content: ''; position: absolute; width: 16px; height: 16px;
+      background: #fff; border-radius: 50%; top: 3px; left: 3px;
+      transition: transform .2s;
+    }
+    .toggle-wrap input:checked + .toggle-slider { background: var(--accent); }
+    .toggle-wrap input:checked + .toggle-slider::after { transform: translateX(18px); }
+
+    /* Toggle password */
+    .eye-btn {
+      position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 18px; padding: 4px;
+    }
+    .key-input { padding-right: 44px !important; }
+
+    /* ── Button ──────────────────────────────────────────────────────── */
+    .btn {
+      width: 100%; padding: 16px;
+      background: linear-gradient(135deg, var(--accent), #9333ea);
+      border: none; border-radius: 10px;
+      color: #fff; font-size: 1rem; font-weight: 700;
+      cursor: pointer; letter-spacing: .02em;
+      transition: opacity .2s, transform .15s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .btn:hover { opacity: .9; transform: translateY(-1px); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+
+    /* ── Progress ────────────────────────────────────────────────────── */
+    #progress-section { display: none; margin-top: 28px; }
+    .progress-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px; font-size: .9rem;
+    }
+    #progress-msg { color: var(--muted); font-size: .88rem; }
+    #progress-pct { font-weight: 700; color: var(--accent2); }
+    .progress-bar-bg {
+      height: 8px; background: var(--surface);
+      border-radius: 99px; overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, var(--accent), var(--tiktok));
+      border-radius: 99px; transition: width .4s ease;
+    }
+
+    /* ── Error ────────────────────────────────────────────────────────── */
+    #error-box {
+      display: none; margin-top: 20px; padding: 14px 18px;
+      background: rgba(254,44,85,.1); border: 1px solid rgba(254,44,85,.3);
+      border-radius: 10px; font-size: .9rem; color: #fe6b85;
+    }
+
+    /* ── Results ─────────────────────────────────────────────────────── */
+    #results-section { display: none; margin-top: 36px; }
+    .results-title {
+      font-size: 1rem; font-weight: 700; margin-bottom: 18px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .clips-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 16px;
+    }
+    .clip-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden;
+      transition: border-color .2s, transform .2s;
+    }
+    .clip-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .clip-thumb {
+      width: 100%; aspect-ratio: 9/16;
+      background: linear-gradient(160deg, var(--card), var(--surface));
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      font-size: 2.5rem; position: relative;
+      overflow: hidden;
+    }
+    .clip-duration {
+      position: absolute; bottom: 8px; right: 8px;
+      background: rgba(0,0,0,.7); font-size: .75rem;
+      padding: 2px 7px; border-radius: 6px; font-weight: 600;
+    }
+    .clip-info { padding: 12px; }
+    .clip-num {
+      font-size: .72rem; font-weight: 700; color: var(--accent2);
+      text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px;
+    }
+    .clip-title {
+      font-size: .82rem; font-weight: 600; line-height: 1.4;
+      margin-bottom: 10px; display: -webkit-box;
+      -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .dl-btn {
+      width: 100%; padding: 9px;
+      background: linear-gradient(135deg, var(--tiktok), #ff4f76);
+      border: none; border-radius: 8px;
+      color: #fff; font-size: .82rem; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; gap: 5px;
+      transition: opacity .2s;
+    }
+    .dl-btn:hover { opacity: .85; }
+    .dl-all-btn {
+      margin-top: 20px; width: 100%; padding: 14px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text);
+      font-size: .95rem; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; gap: 8px;
+      transition: border-color .2s, background .2s;
+    }
+    .dl-all-btn:hover { border-color: var(--accent); background: var(--card); }
+
+    /* ── Features row ─────────────────────────────────────────────────── */
+    .features {
+      position: relative; z-index: 1;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px; max-width: 700px; margin: 0 auto 80px; padding: 0 24px;
+    }
+    .feature {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px 22px;
+    }
+    .feature-icon { font-size: 1.6rem; margin-bottom: 10px; }
+    .feature h3 { font-size: .95rem; font-weight: 700; margin-bottom: 4px; }
+    .feature p { font-size: .82rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── Spinner ─────────────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block; width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Scrollbar ───────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+
+  <!-- Nav -->
+  <nav>
+    <div class="logo">
+      <div class="logo-icon">✂️</div>
+      ClipCut AI
+    </div>
+    <span class="badge">BETA</span>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-tag">🚀 Propulsé par Whisper AI + GPT-4o mini</div>
+    <h1>Transformez vos longues vidéos YouTube en <span>clips TikTok viraux</span></h1>
+    <p>L'IA détecte automatiquement les meilleurs moments, découpe la vidéo en format 9:16 et ajoute des sous-titres mot-par-mot animés.</p>
+    <div class="steps">
+      <div class="step"><span class="step-num">1</span>Collez l'URL YouTube</div>
+      <div class="step"><span class="step-num">2</span>L'IA analyse &amp; découpe</div>
+      <div class="step"><span class="step-num">3</span>Téléchargez vos clips</div>
+    </div>
+  </section>
+
+  <!-- Main app card -->
+  <div class="card">
+    <div class="card-title">🎬 Générer mes clips TikTok</div>
+
+    <form id="main-form" onsubmit="return false;">
+      <!-- YouTube URL -->
+      <div class="form-group">
+        <label for="yt-url">URL YouTube</label>
+        <div class="input-wrap">
+          <span class="icon">🔗</span>
+          <input type="text" id="yt-url" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" />
+        </div>
+      </div>
+
+      <!-- OpenAI Key -->
+      <div class="form-group">
+        <label for="api-key">Clé API OpenAI <span style="color:var(--muted); font-weight:400;">(sk-…)</span></label>
+        <div class="input-wrap">
+          <span class="icon">🔑</span>
+          <input type="password" id="api-key" class="key-input" placeholder="sk-…" autocomplete="off" />
+          <button type="button" class="eye-btn" onclick="toggleKey()">👁️</button>
+        </div>
+      </div>
+
+      <!-- Options row -->
+      <div class="row">
+        <div class="form-group" style="margin-bottom:0">
+          <label for="max-clips">Nombre de clips</label>
+          <select id="max-clips">
+            <option value="1">1 clip (test)</option>
+            <option value="3">3 clips</option>
+            <option value="5" selected>5 clips</option>
+            <option value="7">7 clips</option>
+            <option value="10">10 clips</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label for="clip-duration">Durée max / clip</label>
+          <select id="clip-duration">
+            <option value="10">10 secondes (test)</option>
+            <option value="15">15 secondes</option>
+            <option value="30">30 secondes</option>
+            <option value="45">45 secondes</option>
+            <option value="60" selected>60 secondes</option>
+            <option value="90">90 secondes</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Subtitle style picker -->
+      <div style="margin-top:20px;margin-bottom:8px;">
+        <label style="display:block;margin-bottom:12px;">🎨 Style des sous-titres</label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;" id="style-picker">
+          <div class="style-card active" data-style="elevate" onclick="selectStyle(this)">
+            <div class="style-preview" style="background:#111;">
+              <span style="color:#fff;font-weight:700;font-size:13px;">MOT </span><span style="color:#FFE000;font-weight:900;font-size:15px;">ACTIF</span>
+            </div>
+            <span class="style-label">⚡ Elevate</span>
+          </div>
+          <div class="style-card" data-style="highlight" onclick="selectStyle(this)">
+            <div class="style-preview" style="background:#111;">
+              <span style="color:#fff;font-weight:700;font-size:13px;">MOT </span><span style="background:#3b82f6;color:#fff;font-weight:700;font-size:13px;padding:1px 5px;border-radius:5px;">ACTIF</span>
+            </div>
+            <span class="style-label">🔵 Highlight</span>
+          </div>
+          <div class="style-card" data-style="oneword" onclick="selectStyle(this)">
+            <div class="style-preview" style="background:#111;">
+              <span style="color:#FFE000;font-weight:900;font-size:22px;text-shadow:2px 2px 0 #000;">MOT</span>
+            </div>
+            <span class="style-label">🔥 One Word</span>
+          </div>
+          <div class="style-card" data-style="basic" onclick="selectStyle(this)">
+            <div class="style-preview" style="background:#111;">
+              <span style="color:#fff;font-weight:600;font-size:13px;">Sous-titres classiques</span>
+            </div>
+            <span class="style-label">📝 Basic</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interval -->
+      <div style="margin-top:20px;margin-bottom:8px;">
+        <label style="display:block;margin-bottom:10px;">⏱️ Intervalle de la vidéo <span style="font-weight:400;color:var(--muted)">(optionnel)</span></label>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label style="font-size:.78rem;margin-bottom:4px;">Début (ex: 1:30 ou 90)</label>
+            <input type="text" id="video-start" placeholder="Début de la vidéo" style="padding:10px 12px;">
+          </div>
+          <div>
+            <label style="font-size:.78rem;margin-bottom:4px;">Fin (ex: 8:00 ou 480)</label>
+            <input type="text" id="video-end" placeholder="Fin de la vidéo" style="padding:10px 12px;">
+          </div>
+        </div>
+      </div>
+
+      <!-- Face tracking + Smart zoom -->
+      <div style="margin-top:18px;margin-bottom:20px;display:flex;gap:14px;flex-wrap:wrap;">
+        <label class="toggle-wrap">
+          <input type="checkbox" id="face-tracking">
+          <span class="toggle-slider"></span>
+          <span style="font-size:.88rem;font-weight:600;">🎯 Suivi du visage</span>
+        </label>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="smart-zoom">
+          <span class="toggle-slider"></span>
+          <span style="font-size:.88rem;font-weight:600;">🔍 Zoom intelligent</span>
+        </label>
+      </div>
+
+      <div style="margin-top:4px;margin-bottom:24px;">
+        <label for="language">Langue de la vidéo</label>
+        <select id="language">
+          <option value="auto">🔍 Détection automatique</option>
+          <option value="fr">🇫🇷 Français</option>
+          <option value="en">🇬🇧 Anglais</option>
+          <option value="es">🇪🇸 Espagnol</option>
+          <option value="de">🇩🇪 Allemand</option>
+          <option value="ar">🇸🇦 Arabe</option>
+        </select>
+      </div>
+
+      <button class="btn" id="submit-btn" onclick="startProcessing()">
+        <span id="btn-text">✂️ Générer mes clips TikTok</span>
+      </button>
+    </form>
+
+    <!-- Progress -->
+    <div id="progress-section">
+      <div class="progress-header">
+        <span id="progress-msg">Démarrage…</span>
+        <span id="progress-pct">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div id="error-box">⚠️ <span id="error-msg"></span></div>
+
+    <!-- Results -->
+    <div id="results-section">
+      <div class="results-title">🎉 <span id="results-count">0</span> clips prêts à poster !</div>
+      <div id="warnings-box" style="display:none;margin-bottom:14px;padding:12px 16px;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:10px;font-size:.83rem;color:#fbbf24;white-space:pre-wrap;"></div>
+      <div class="clips-grid" id="clips-grid"></div>
+      <button class="dl-all-btn" id="dl-all-btn" onclick="downloadAll()">
+        ⬇️ Tout télécharger
+      </button>
+    </div>
+  </div>
+
+  <!-- Feature cards -->
+  <div class="features">
+    <div class="feature">
+      <div class="feature-icon">🤖</div>
+      <h3>Détection IA</h3>
+      <p>GPT-4o mini analyse votre transcription et identifie les passages les plus viraux.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">📱</div>
+      <h3>Format 9:16</h3>
+      <p>Conversion automatique en format vertical TikTok/Reels/Shorts (1080×1920).</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">💬</div>
+      <h3>Sous-titres animés</h3>
+      <p>Chaque mot apparaît en jaune au fur et à mesure, style viral CapCut.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">⚡</div>
+      <h3>100% local</h3>
+      <p>Vos vidéos ne quittent pas votre machine. Whisper tourne en local.</p>
+    </div>
+  </div>
+
+  <script>
+    let currentJobId = null;
+    let pollInterval = null;
+
+    // ── Toggle API key visibility ──────────────────────────────────────
+    function toggleKey() {
+      const el = document.getElementById('api-key');
+      el.type = el.type === 'password' ? 'text' : 'password';
+    }
+
+    // ── Style picker ───────────────────────────────────────────────────
+    function selectStyle(el) {
+      document.querySelectorAll('.style-card').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    // ── Start processing ───────────────────────────────────────────────
+    async function startProcessing() {
+      const url = document.getElementById('yt-url').value.trim();
+      const key = document.getElementById('api-key').value.trim();
+      const maxClips = parseInt(document.getElementById('max-clips').value);
+      const clipDuration = parseInt(document.getElementById('clip-duration').value);
+      const language = document.getElementById('language').value;
+      const subtitleStyle = document.querySelector('.style-card.active')?.dataset.style || 'elevate';
+      const faceTracking  = document.getElementById('face-tracking').checked;
+      const smartZoom     = document.getElementById('smart-zoom').checked;
+
+      // Parse interval — accepts "m:ss" or plain seconds
+      function parseTime(val) {
+        if (!val || !val.trim()) return null;
+        const v = val.trim();
+        if (v.includes(':')) {
+          const [m, s] = v.split(':').map(Number);
+          return m * 60 + (s || 0);
+        }
+        const n = parseFloat(v);
+        return isNaN(n) ? null : n;
+      }
+      const videoStart = parseTime(document.getElementById('video-start').value);
+      const videoEnd   = parseTime(document.getElementById('video-end').value);
+
+      if (!url) return alert('Veuillez coller une URL YouTube.');
+      if (!key) return alert('Veuillez entrer votre clé API OpenAI.');
+
+      // Reset UI
+      document.getElementById('error-box').style.display = 'none';
+      document.getElementById('results-section').style.display = 'none';
+      document.getElementById('progress-section').style.display = 'block';
+      setProgress(0, 'Envoi de la requête…');
+
+      const btn = document.getElementById('submit-btn');
+      const btnText = document.getElementById('btn-text');
+      btn.disabled = true;
+      btnText.innerHTML = '<span class="spinner"></span> Traitement en cours…';
+
+      try {
+        const res = await fetch('/api/process', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            youtube_url: url,
+            openai_api_key: key,
+            max_clips: maxClips,
+            clip_duration: clipDuration,
+            language: language,
+            subtitle_style: subtitleStyle,
+            video_start: videoStart,
+            video_end:   videoEnd,
+            face_tracking: faceTracking,
+            smart_zoom:    smartZoom,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Erreur serveur');
+        currentJobId = data.job_id;
+        pollInterval = setInterval(pollStatus, 2000);
+      } catch (err) {
+        showError(err.message);
+        resetBtn();
+      }
+    }
+
+    // ── Poll status ────────────────────────────────────────────────────
+    async function pollStatus() {
+      if (!currentJobId) return;
+      try {
+        const res = await fetch(`/api/status/${currentJobId}`);
+        const job = await res.json();
+
+        setProgress(job.progress, job.message);
+
+        if (job.status === 'completed') {
+          clearInterval(pollInterval);
+          showResults(job);
+          resetBtn();
+        } else if (job.status === 'error') {
+          clearInterval(pollInterval);
+          showError(job.error || 'Erreur inconnue');
+          resetBtn();
+        }
+      } catch (err) {
+        clearInterval(pollInterval);
+        showError('Impossible de contacter le serveur.');
+        resetBtn();
+      }
+    }
+
+    // ── UI helpers ─────────────────────────────────────────────────────
+    function setProgress(pct, msg) {
+      document.getElementById('progress-fill').style.width = pct + '%';
+      document.getElementById('progress-pct').textContent = pct + '%';
+      document.getElementById('progress-msg').textContent = msg;
+    }
+
+    function showError(msg) {
+      document.getElementById('progress-section').style.display = 'none';
+      const box = document.getElementById('error-box');
+      document.getElementById('error-msg').textContent = msg;
+      box.style.display = 'block';
+    }
+
+    function resetBtn() {
+      const btn = document.getElementById('submit-btn');
+      const btnText = document.getElementById('btn-text');
+      btn.disabled = false;
+      btnText.innerHTML = '✂️ Générer mes clips TikTok';
+    }
+
+    function showResults(job) {
+      document.getElementById('progress-section').style.display = 'none';
+      const section = document.getElementById('results-section');
+      const grid = document.getElementById('clips-grid');
+      document.getElementById('results-count').textContent = job.clips.length;
+
+      grid.innerHTML = '';
+      job.clips.forEach((clip, i) => {
+        const mins = Math.floor(clip.duration / 60);
+        const secs = Math.round(clip.duration % 60);
+        const durLabel = mins > 0 ? `${mins}:${String(secs).padStart(2,'0')}` : `${secs}s`;
+
+        const emojis = ['🔥','⚡','💡','🎯','✨','🚀','💎','🎬'];
+        const emoji = emojis[i % emojis.length];
+
+        grid.innerHTML += `
+          <div class="clip-card">
+            <div class="clip-thumb">
+              ${emoji}
+              <span class="clip-duration">${durLabel}</span>
+            </div>
+            <div class="clip-info">
+              <div class="clip-num">Clip ${i + 1}</div>
+              <div class="clip-title">${escHtml(clip.title)}</div>
+              <button class="dl-btn" onclick="downloadClip(${i})">
+                ⬇️ Télécharger
+              </button>
+            </div>
+          </div>`;
+      });
+
+      // Affiche les warnings éventuels (ex: sous-titres non incrustés)
+      const warnBox = document.getElementById('warnings-box');
+      if (job.warnings && job.warnings.length > 0) {
+        warnBox.style.display = 'block';
+        warnBox.textContent = '⚠️ ' + job.warnings.join('\n⚠️ ');
+      } else {
+        warnBox.style.display = 'none';
+      }
+
+      section.style.display = 'block';
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function downloadClip(index) {
+      window.location.href = `/api/download/${currentJobId}/${index}`;
+    }
+
+    function downloadAll() {
+      if (!currentJobId) return;
+      const cards = document.querySelectorAll('.clip-card');
+      cards.forEach((_, i) => {
+        setTimeout(() => {
+          const a = document.createElement('a');
+          a.href = `/api/download/${currentJobId}/${i}`;
+          a.download = `tiktok_clip_${i + 1}.mp4`;
+          a.click();
+        }, i * 800);
+      });
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+  </script>
+</body>
+</html>
