@@ -7,8 +7,9 @@ uvicorn[standard]>=0.27.0
 # YouTube downloader
 yt-dlp>=2024.1.0
 
-# AI transcription (runs locally — no API key needed)
-openai-whisper>=20231117
+# AI transcription — faster-whisper is 4-8x faster than openai-whisper on CPU
+# Falls back to openai-whisper if faster-whisper is not installed
+faster-whisper>=1.0.0
 
 # OpenAI API (GPT-4o mini for moment detection)
 openai>=1.12.0
