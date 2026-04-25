@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClipCut AI — Admin</title>
+  <link rel="stylesheet" href="/css/admin.css" />
+</head>
+<body>
+
+<nav>
+  <div class="logo">
+    <div class="logo-icon">⚙️</div>
+    ClipCut AI — Admin
+  </div>
+  <a class="back-link" href="/">← Retour à l'app</a>
+</nav>
+
+<div class="container">
+
+  <!-- Stats -->
+  <h2>📊 Statistiques système</h2>
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card"><div class="stat-label">Chargement</div>
+      <div class="stat-value"><span class="spinner"></span></div></div>
+  </div>
+
+  <!-- Active jobs -->
+  <div class="section">
+    <h2>⚙️ Jobs actifs
+      <button class="refresh-btn" onclick="loadStats()">⟳ Actualiser</button>
+    </h2>
+    <div id="active-jobs-list"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <!-- Recent jobs -->
+  <div class="section">
+    <h2>🕐 Derniers projets (20)</h2>
+    <div id="recent-jobs-list"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <!-- Whisper RAM cache -->
+  <div class="section">
+    <h2>🧠 Cache Whisper (RAM)
+      <button class="action-btn btn-danger" onclick="clearWhisperCache()"
+              id="clear-whisper-btn" style="margin-left:12px;">
+        🗑️ Libérer la RAM
+      </button>
+    </h2>
+    <div id="whisper-cache-info"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <!-- Transcript disk cache -->
+  <div class="section">
+    <h2>📝 Cache transcriptions (disque)
+      <button class="action-btn btn-danger" onclick="clearTranscriptCache()"
+              id="clear-transcript-btn" style="margin-left:12px;">
+        🗑️ Vider les transcriptions
+      </button>
+    </h2>
+    <div id="transcript-cache-info"><div class="empty">Chargement…</div></div>
+  </div>
+
+  <!-- Video download cache -->
+  <div class="section">
+    <h2>💾 Cache vidéo (disque)
+      <button class="action-btn btn-danger" onclick="clearCache()"
+              id="clear-cache-btn" style="margin-left:12px;">
+        🗑️ Vider le cache
+      </button>
+    </h2>
+    <div id="cache-list"><div class="empty">Chargement…</div></div>
+  </div>
+
+</div>
+
+<script src="/js/admin.js" defer></script>
+
+</body>
+</html>

@@ -19,6 +19,12 @@ WHISPER_SPEED = {
     "large":  1.00,
 }
 
+# ── Whisper model cache ────────────────────────────────────────────────────
+# Models are heavy (base=~150MB, medium=~1.5GB). Keeping one in RAM avoids
+# a ~5-10s reload on every job. We keep at most 1 model at a time to cap RAM.
+_WHISPER_CACHE: dict = {}   # { model_name: WhisperModel_instance }
+_WHISPER_CACHE_MAX = 1      # increase to 2 if you want base+medium both hot
+
 def _fmt_duration(seconds: float) -> str:
     """Format seconds as 'Xmin Ys' or 'Xs'."""
     s = int(max(0, seconds))
@@ -312,33 +318,52 @@ class VideoProcessor:
             self.jobs[self.job_id]["title"] = title
             self._log(f"Vidéo téléchargée : «{title}»")
 
-            # Probe duration → compute ETA
+            # Probe duration → compute initial ETA
             dur    = self._get_video_duration(video_path)
             cached = "(cache)" in self.jobs[self.job_id].get("message", "")
             dur_label = ""
             if dur > 0:
                 m, s = int(dur // 60), int(dur % 60)
                 dur_label = f" — vidéo de {m}min {s}s"
-
                 eta_sec = self._estimate_eta(dur, max_clips, clip_duration, cached)
-                self.jobs[self.job_id]["eta_seconds"]  = eta_sec
-                self.jobs[self.job_id]["started_at"]   = time.time()
-
+                self.jobs[self.job_id]["eta_seconds"] = eta_sec
+                self.jobs[self.job_id]["started_at"]  = time.time()
                 self._log(
                     f"Durée vidéo : {m}min {s}s | "
                     f"Modèle : Whisper {whisper_model} | "
-                    f"Temps estimé : ~{_fmt_duration(eta_sec)}"
+                    f"ETA initial : ~{_fmt_duration(eta_sec)}"
                 )
 
-            # Store interval so _transcribe can extract only the relevant audio
-            self._partial_start = video_start
-            self._partial_end   = video_end
+            # ── Parse YouTube heatmap (Most Replayed) ─────────────────────
+            raw_heatmap = getattr(self, "_raw_heatmap", [])
+            hot_segs    = None
+            if raw_heatmap and dur > 0:
+                self._log(f"Analyse heatmap YouTube ({len(raw_heatmap)} points de données)...")
+                hot_segs = self._parse_heatmap(raw_heatmap, dur)
+            else:
+                self._log("Heatmap YouTube non disponible pour cette vidéo")
 
-            # If interval defined, reduce transcription estimate
-            transcribe_dur = dur
-            if video_start is not None and video_end is not None:
-                transcribe_dur = video_end - video_start
-                self._log(f"Intervalle défini : transcription limitée à {transcribe_dur:.0f}s")
+            self._hot_segments = hot_segs
+            self.jobs[self.job_id]["heatmap_active"]  = bool(hot_segs)
+            self.jobs[self.job_id]["hot_segment_count"] = len(hot_segs) if hot_segs else 0
+
+            # Recalculate ETA using hot duration if heatmap available
+            if hot_segs and dur > 0:
+                hot_dur = sum(e - s for s, e in hot_segs)
+                self.jobs[self.job_id]["hot_duration"] = int(hot_dur)
+                eta_sec = self._estimate_eta_hot(dur, hot_dur, max_clips, clip_duration, cached)
+                self.jobs[self.job_id]["eta_seconds"]  = eta_sec
+                self._log(
+                    f"⚡ Heatmap activée — transcription réduite : "
+                    f"{dur:.0f}s → {hot_dur:.0f}s ({int(hot_dur/dur*100)}%) | "
+                    f"Nouveau ETA : ~{_fmt_duration(eta_sec)}"
+                )
+
+            # Store manual interval (video_start/video_end) — lower priority than heatmap
+            self._partial_start = video_start if not hot_segs else None
+            self._partial_end   = video_end   if not hot_segs else None
+            if video_start is not None and video_end is not None and not hot_segs:
+                self._log(f"Intervalle manuel défini : transcription limitée à {video_end - video_start:.0f}s")
 
             self._update("processing", 20,
                          f"Transcription faster-whisper ({whisper_model}){dur_label}...")
@@ -359,7 +384,7 @@ class VideoProcessor:
             self._log(f"GPT-4o mini : sélection de {max_clips} moment(s) viraux (max {clip_duration}s)...")
             clips_meta = await loop.run_in_executor(
                 None, self._select_moments, transcript, max_clips, clip_duration,
-                video_start, video_end)
+                video_start, video_end, self._hot_segments)
             self._log(f"{len(clips_meta)} moment(s) sélectionné(s) par l'IA")
             for i, (s, e, t, sc) in enumerate(clips_meta):
                 self._log(f"  Clip {i+1}: «{t[:50]}» [{s:.1f}s → {e:.1f}s] score={sc}/10")
@@ -416,15 +441,151 @@ class VideoProcessor:
           - Download      : ~10s if cached, ~60s otherwise
           - Transcription : video_duration × whisper_factor
           - GPT calls     : ~12s (selection + captions)
-          - ffmpeg / clip : clip_duration × 1.8 + 18s (encode + subtitle pass)
+          - ffmpeg / clip : clip_duration × 0.65 + 12s per clip
         """
         download   = 8  if cached else 55
         whisper_f  = WHISPER_SPEED.get(self.whisper_model, 0.10)
         transcribe = video_duration * whisper_f
         gpt        = 12
-        # ffmpeg medium preset: ~0.6× real-time for encode + subtitle pass
         ffmpeg     = num_clips * (clip_duration * 0.65 + 12)
         return int(download + transcribe + gpt + ffmpeg)
+
+    def _estimate_eta_hot(self, video_duration: float, hot_duration: float,
+                          num_clips: int, clip_duration: int, cached: bool) -> int:
+        """Same as _estimate_eta but transcription uses only hot_duration."""
+        download   = 8  if cached else 55
+        whisper_f  = WHISPER_SPEED.get(self.whisper_model, 0.10)
+        transcribe = hot_duration * whisper_f
+        gpt        = 12
+        ffmpeg     = num_clips * (clip_duration * 0.65 + 12)
+        return int(download + transcribe + gpt + ffmpeg)
+
+    # ── Heatmap parsing & hot-segment extraction ──────────────────────────
+
+    def _parse_heatmap(self, heatmap: list, duration: float):
+        """
+        Parse yt-dlp heatmap (list of {start_time, end_time, value}).
+        Keeps the top 35% most-viewed segments, merges adjacent ones (<30s gap).
+        Returns list of (start, end) tuples, or None if unavailable/useless.
+        """
+        if not heatmap:
+            return None
+
+        values = [float(h.get("value", 0)) for h in heatmap]
+        max_val = max(values) if values else 0.0
+        if max_val <= 0:
+            return None
+
+        # Threshold = top 35% by value
+        sorted_vals = sorted(values, reverse=True)
+        top_n = max(1, int(len(sorted_vals) * 0.35))
+        threshold = sorted_vals[top_n - 1]
+
+        hot = []
+        for h in heatmap:
+            if float(h.get("value", 0)) >= threshold:
+                s = float(h.get("start_time", 0))
+                e = float(h.get("end_time", s + 10))
+                hot.append((s, e))
+
+        if not hot:
+            return None
+
+        hot.sort()
+        merged = [list(hot[0])]
+        for s, e in hot[1:]:
+            if s - merged[-1][1] < 30:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        merged = [(float(s), float(e)) for s, e in merged]
+
+        total_hot = sum(e - s for s, e in merged)
+        pct = int(total_hot / duration * 100) if duration > 0 else 0
+        self._log(f"🔥 Heatmap YouTube : {len(merged)} zone(s) populaire(s) détectée(s)")
+        self._log(f"   Durée totale : {total_hot:.0f}s / {duration:.0f}s ({pct}% de la vidéo)")
+        for i, (s, e) in enumerate(merged):
+            self._log(f"   Zone {i+1} : {int(s)//60}:{int(s)%60:02d} → {int(e)//60}:{int(e)%60:02d} ({e-s:.0f}s)")
+        return merged
+
+    def _extract_hot_audio(self, video_path: str, segments: list):
+        """
+        Extract audio from each hot segment and concatenate them.
+        Returns (audio_path, offsets) where offsets = [(concat_start, video_start), ...]
+        Returns (None, None) on failure.
+        """
+        parts   = []
+        offsets = []
+        concat_pos = 0.0
+
+        for i, (s, e) in enumerate(segments):
+            part = os.path.join(self.job_dir, f"hot_part_{i}.m4a")
+            r = subprocess.run(
+                ["ffmpeg", "-y",
+                 "-ss", str(s), "-to", str(e),
+                 "-i", video_path,
+                 "-vn", "-c:a", "copy", part],
+                capture_output=True
+            )
+            if r.returncode == 0 and os.path.exists(part):
+                parts.append(part)
+                offsets.append((concat_pos, s))
+                concat_pos += (e - s)
+            else:
+                self._log(f"   ⚠️ Extraction zone {i+1} échouée, ignorée")
+
+        if not parts:
+            return None, None
+
+        if len(parts) == 1:
+            return parts[0], offsets
+
+        # Concatenate all audio parts into one file
+        concat_out = os.path.join(self.job_dir, "hot_audio.aac")
+        inputs     = []
+        for p in parts:
+            inputs += ["-i", p]
+        filter_s = "".join(f"[{i}:a]" for i in range(len(parts)))
+        filter_s += f"concat=n={len(parts)}:v=0:a=1[aout]"
+        r = subprocess.run(
+            ["ffmpeg", "-y"] + inputs + [
+                "-filter_complex", filter_s,
+                "-map", "[aout]",
+                "-c:a", "aac", "-b:a", "128k", concat_out
+            ],
+            capture_output=True
+        )
+        for p in parts:
+            try: os.remove(p)
+            except OSError: pass
+
+        if r.returncode == 0 and os.path.exists(concat_out):
+            return concat_out, offsets
+        return None, None
+
+    def _remap_hot_timestamps(self, result: dict, offsets: list) -> dict:
+        """
+        Convert timestamps from concatenated audio space → original video time.
+        offsets: [(concat_start, video_start), ...] sorted by concat_start ascending.
+        """
+        def remap(t: float) -> float:
+            for i, (cs, vs) in enumerate(offsets):
+                next_cs = offsets[i + 1][0] if i + 1 < len(offsets) else float("inf")
+                if cs <= t < next_cs:
+                    return t - cs + vs
+            # Fallback: use last segment
+            if offsets:
+                cs, vs = offsets[-1]
+                return t - cs + vs
+            return t
+
+        for seg in result.get("segments", []):
+            seg["start"] = remap(seg["start"])
+            seg["end"]   = remap(seg["end"])
+            for w in seg.get("words", []):
+                w["start"] = remap(w["start"])
+                w["end"]   = remap(w["end"])
+        return result
 
     # ── Video duration probe ──────────────────────────────────────────────
 
@@ -452,8 +613,10 @@ class VideoProcessor:
                 with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
                     meta  = ydl.extract_info(url, download=False)
                     title = meta.get("title", "Untitled")
+                    self._raw_heatmap = meta.get("heatmap") or []
             except Exception:
                 title = video_id
+                self._raw_heatmap = []
             return cache_path, title
 
         ydl_opts = {
@@ -473,6 +636,7 @@ class VideoProcessor:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             meta  = ydl.extract_info(url, download=True)
             title = meta.get("title", "Untitled")
+            self._raw_heatmap = meta.get("heatmap") or []
         return cache_path, title
 
     # ── Transcribe ────────────────────────────────────────────────────────
@@ -481,31 +645,57 @@ class VideoProcessor:
         """
         Transcribe using faster-whisper (4-8x faster on CPU, int8 quantized).
         Falls back to openai-whisper if faster-whisper is not installed.
-        If video_start/video_end are set on the processor, only extract and
-        transcribe that audio segment (saves proportional time).
+
+        Priority order for audio extraction:
+          1. Hot segments from YouTube heatmap (smartest — only most-viewed parts)
+          2. Manual interval (video_start / video_end)
+          3. Full video (fallback)
         """
-        audio_path = video_path  # default: full file
+        audio_path  = video_path
+        tmp_audio   = None
+        hot_offsets = None  # list of (concat_start, video_start) for timestamp remapping
 
-        # Partial transcription: extract only the relevant interval
-        v_start = getattr(self, '_partial_start', None)
-        v_end   = getattr(self, '_partial_end',   None)
-        tmp_audio = None
-        if v_start is not None and v_end is not None and v_end > v_start:
-            tmp_audio = os.path.join(self.job_dir, "partial_audio.m4a")
-            self._log(f"Extraction audio partielle [{v_start:.0f}s → {v_end:.0f}s] ({v_end-v_start:.0f}s au lieu de la vidéo entière)")
-            r = subprocess.run(
-                ["ffmpeg", "-y",
-                 "-ss", str(v_start), "-to", str(v_end),
-                 "-i", video_path,
-                 "-vn", "-c:a", "copy", tmp_audio],
-                capture_output=True
+        # ── Priority 1: YouTube heatmap hot segments ──────────────────────
+        hot_segs = getattr(self, "_hot_segments", None)
+        if hot_segs:
+            total_hot = sum(e - s for s, e in hot_segs)
+            self._log(
+                f"⚡ Transcription intelligente : extraction de {len(hot_segs)} zone(s) "
+                f"populaire(s) ({total_hot:.0f}s au lieu de la vidéo entière)"
             )
-            if r.returncode == 0 and os.path.exists(tmp_audio):
-                audio_path = tmp_audio
+            extracted, offsets = self._extract_hot_audio(video_path, hot_segs)
+            if extracted and offsets:
+                audio_path  = extracted
+                tmp_audio   = extracted
+                hot_offsets = offsets
+                self._log(f"   Audio hot extrait → {os.path.basename(extracted)}")
             else:
-                self._log("⚠️ Extraction partielle échouée — transcription de la vidéo complète")
-                tmp_audio = None
+                self._log("   ⚠️ Extraction hot échouée — transcription complète en fallback")
 
+        # ── Priority 2: manual interval (video_start/video_end) ───────────
+        elif (getattr(self, "_partial_start", None) is not None and
+              getattr(self, "_partial_end",   None) is not None):
+            v_start, v_end = self._partial_start, self._partial_end
+            if v_end > v_start:
+                tmp_audio = os.path.join(self.job_dir, "partial_audio.m4a")
+                self._log(
+                    f"Extraction audio partielle [{v_start:.0f}s → {v_end:.0f}s] "
+                    f"({v_end - v_start:.0f}s au lieu de la vidéo entière)"
+                )
+                r = subprocess.run(
+                    ["ffmpeg", "-y",
+                     "-ss", str(v_start), "-to", str(v_end),
+                     "-i", video_path, "-vn", "-c:a", "copy", tmp_audio],
+                    capture_output=True
+                )
+                if r.returncode == 0 and os.path.exists(tmp_audio):
+                    audio_path  = tmp_audio
+                    hot_offsets = [(0.0, v_start)]
+                else:
+                    self._log("⚠️ Extraction partielle échouée — transcription complète")
+                    tmp_audio = None
+
+        # ── Transcribe ────────────────────────────────────────────────────
         try:
             result = self._transcribe_faster(audio_path, language)
             self._log("Moteur : faster-whisper (optimisé CPU)")
@@ -513,25 +703,41 @@ class VideoProcessor:
             self._log(f"faster-whisper indisponible ({e}) — fallback openai-whisper")
             result = self._transcribe_openai(audio_path, language)
 
-        # If partial, offset timestamps back to absolute video time
-        if tmp_audio and v_start:
-            for seg in result.get("segments", []):
-                seg["start"] += v_start
-                seg["end"]   += v_start
-                for w in seg.get("words", []):
-                    w["start"] += v_start
-                    w["end"]   += v_start
+        # ── Remap timestamps back to original video time ──────────────────
+        if hot_offsets:
+            result = self._remap_hot_timestamps(result, hot_offsets)
+
+        if tmp_audio:
             try: os.remove(tmp_audio)
             except OSError: pass
 
         return result
 
     def _transcribe_faster(self, audio_path: str, language):
-        """faster-whisper transcription — returns openai-whisper-compatible dict."""
+        """
+        faster-whisper transcription — returns openai-whisper-compatible dict.
+        The WhisperModel instance is kept in a module-level cache so it is NOT
+        reloaded between jobs (saves 5-10s per run after the first load).
+        """
         from faster_whisper import WhisperModel
-        self._log(f"Chargement WhisperModel({self.whisper_model}, int8)...")
-        model = WhisperModel(self.whisper_model, device="cpu", compute_type="int8")
-        lang  = language if language else None
+        global _WHISPER_CACHE, _WHISPER_CACHE_MAX
+
+        model_key = self.whisper_model
+        if model_key in _WHISPER_CACHE:
+            self._log(f"✓ Whisper «{model_key}» déjà en cache RAM — skip rechargement")
+            model = _WHISPER_CACHE[model_key]
+        else:
+            # Evict oldest entry if cache is full
+            if len(_WHISPER_CACHE) >= _WHISPER_CACHE_MAX:
+                evicted = next(iter(_WHISPER_CACHE))
+                del _WHISPER_CACHE[evicted]
+                self._log(f"Cache Whisper : «{evicted}» désactivé pour libérer la RAM")
+            self._log(f"Chargement WhisperModel({model_key}, int8) — mise en cache RAM...")
+            model = WhisperModel(model_key, device="cpu", compute_type="int8")
+            _WHISPER_CACHE[model_key] = model
+            self._log(f"✓ Modèle «{model_key}» chargé et mis en cache (réutilisable)")
+
+        lang = language if language else None
         self._log("Transcription en cours (faster-whisper)...")
         segments_iter, info = model.transcribe(
             audio_path, language=lang,
@@ -594,7 +800,7 @@ class VideoProcessor:
     # ── AI moment selection (with viral score) ────────────────────────────
 
     def _select_moments(self, transcript, max_clips, clip_duration,
-                        video_start=None, video_end=None):
+                        video_start=None, video_end=None, hot_segments=None):
         MIN_DURATION = max(10, clip_duration // 4)
         segments_info = [
             {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s["text"].strip()}
@@ -603,10 +809,24 @@ class VideoProcessor:
             and (video_end   is None or s["start"] <= video_end)
         ]
         client = OpenAI(api_key=self.openai_key)
+
+        hot_hint = ""
+        if hot_segments:
+            ranges = ", ".join(
+                f"{int(s)//60}:{int(s)%60:02d}-{int(e)//60}:{int(e)%60:02d}"
+                for s, e in hot_segments
+            )
+            hot_hint = (
+                f"\nIMPORTANT: The following time ranges are the MOST REPLAYED parts "
+                f"of this video according to YouTube analytics (heatmap): {ranges}. "
+                f"Strongly prefer clips that fall within or overlap these ranges, "
+                f"as they are proven to be the most engaging moments."
+            )
+
         prompt = f"""You are a TikTok viral content expert.
 Select exactly {max_clips} clips. Min {MIN_DURATION}s, Max {clip_duration}s. Extend if too short.
 Use natural sentence boundaries. No overlap.
-For each clip also give a viral_score (1-10) based on entertainment, emotion, and shareability.
+For each clip also give a viral_score (1-10) based on entertainment, emotion, and shareability.{hot_hint}
 Transcript: {json.dumps(segments_info, ensure_ascii=False)}
 Reply ONLY with JSON: {{"clips": [{{"start": 12.5, "end": 48.3, "title": "Title", "viral_score": 8}}]}}"""
         response = client.chat.completions.create(
@@ -1048,7 +1268,7 @@ Reply ONLY with JSON: {{"clips": [{{"start": 12.5, "end": 48.3, "title": "Title"
             return False
         return True
 
-    # ── Webhook notification ──────────────────────────────────────────────
+    # \u2500\u2500 Webhook notification \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
     def _fire_webhook(self, webhook_url: str, job_id: str, clip_count: int):
         """POST a JSON payload to the webhook URL on completion."""

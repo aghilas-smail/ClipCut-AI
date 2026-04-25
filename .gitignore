@@ -2,3 +2,6 @@
 /.idea
 /outputs
 /backend.zip
+/backend/__pycache__
+/backend/api/__pycache__
+/backend/core/__pycache__
