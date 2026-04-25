@@ -4,6 +4,7 @@ Word-by-word TikTok-style subtitles with 4 styles.
 """
 from PIL import Image, ImageDraw, ImageFont
 from config import FONT_FILE
+import unicodedata
 
 
 def _draw_outlined_text(draw, pos, text, font, fill,
@@ -79,9 +80,17 @@ def render_word_group_png(words_in_group, current_word_idx, out_path,
         "split":     82,
     }.get(style, 80)
 
+    words_in_group = [_clean_text_for_style(w) for w in words_in_group]
+    
     try:
+        # On définit font_n (normal) et font_a (actif)
         font_n = ImageFont.truetype(FONT_FILE, fs) if FONT_FILE else ImageFont.load_default()
-        font_a = font_n
+        
+        # Pour le style "elevate", on booste un peu la taille du mot actif
+        if style == "elevate":
+            font_a = ImageFont.truetype(FONT_FILE, fs + 15)
+        else:
+            font_a = font_n
     except Exception:
         font_n = font_a = ImageFont.load_default()
 
@@ -235,3 +244,11 @@ def render_hook_png(text, out_path, video_w=1080):
 
     img.save(out_path, "PNG")
     return total_h
+
+def _clean_text_for_style(text):
+    """Convertit en majuscules et supprime les accents."""
+    # Normalisation pour séparer les accents des lettres
+    text = unicodedata.normalize('NFD', text)
+    # On garde uniquement les caractères non-accentués et on met en majuscule
+    text = "".join([c for c in text if unicodedata.category(c) != 'Mn'])
+    return text.upper()

@@ -802,12 +802,31 @@ class VideoProcessor:
     def _select_moments(self, transcript, max_clips, clip_duration,
                         video_start=None, video_end=None, hot_segments=None):
         MIN_DURATION = max(10, clip_duration // 4)
-        segments_info = [
-            {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s["text"].strip()}
-            for s in transcript["segments"]
-            if (video_start is None or s["end"] >= video_start)
-            and (video_end   is None or s["start"] <= video_end)
-        ]
+        
+        segments_info = []
+        for s in transcript["segments"]:    
+            s_start = round(s["start"], 1)
+            s_end = round(s["end"], 1)
+            
+        # We add only the segemnt how are in the interval (Onlly)
+        if video_start is not None and s_start < video_start:
+            continue
+        
+        if video_end is not None and s_end > video_end:
+            continue
+        
+        segments_info.append({
+            "start": s_start,
+            "end": s_end,
+            "text": s["text"].strip()
+        })
+        
+        # segments_info = [
+        #     {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s["text"].strip()}
+        #     for s in transcript["segments"]
+        #     if (video_start is None or s["end"] >= video_start)
+        #     and (video_end   is None or s["start"] <= video_end)
+        # ]
         client = OpenAI(api_key=self.openai_key)
 
         hot_hint = ""
@@ -825,6 +844,8 @@ class VideoProcessor:
 
         prompt = f"""You are a TikTok viral content expert.
 Select exactly {max_clips} clips. Min {MIN_DURATION}s, Max {clip_duration}s. Extend if too short.
+STRICT CONSTRAINT: You must ONLY use the provided transcript timestamps.
+Do NOT go outside the range {video_start if video_start else 0}s to {video_end if video_end else 'end'}s.
 Use natural sentence boundaries. No overlap.
 For each clip also give a viral_score (1-10) based on entertainment, emotion, and shareability.{hot_hint}
 Transcript: {json.dumps(segments_info, ensure_ascii=False)}
@@ -1009,6 +1030,17 @@ Reply ONLY with JSON: {{"clips": [{{"start": 12.5, "end": 48.3, "title": "Title"
     # ── Clip generation ───────────────────────────────────────────────────
 
     def _make_tiktok_clip(self, video_path, transcript, start, end, index):
+        
+        # Récupération les limites depuis l'instance
+        v_limit_start = getattr(self, "_partial_start", None)
+        v_limit_end = getattr(self, "_partial_end", None)
+        
+        # Force le clip a rester dans les bornes définies par l'utilisateur 
+        if v_limit_start is not None:
+            start = max(start, v_limit_start)
+        if v_limit_end is not None:
+            end = min(end, v_limit_end)
+            
         clip_path = os.path.abspath(os.path.join(self.job_dir, f"clip_{index}.mp4"))
         temp_path = os.path.abspath(os.path.join(self.job_dir, f"temp_{index}.mp4"))
 
