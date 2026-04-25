@@ -199,6 +199,77 @@
     btn.disabled = false;
   }
 
+  async function loadCleanupStats() {
+    try {
+      const res  = await fetch('/api/cleanup/stats?max_age_hours=6');
+      const data = await res.json();
+      const el   = document.getElementById('cleanup-info');
+      const d    = data.current_disk;
+
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+          <div class="stat-card" style="padding:10px 14px;">
+            <div class="stat-label">Vidéos téléchargées</div>
+            <div class="stat-value" style="font-size:1.1rem;">${d.videos_total_mb} MB</div>
+          </div>
+          <div class="stat-card" style="padding:10px 14px;">
+            <div class="stat-label">Transcriptions</div>
+            <div class="stat-value" style="font-size:1.1rem;">${d.transcripts_total_mb} MB</div>
+          </div>
+          <div class="stat-card" style="padding:10px 14px;">
+            <div class="stat-label">Uploads temp</div>
+            <div class="stat-value" style="font-size:1.1rem;">${d.uploads_total_mb} MB</div>
+          </div>
+          <div class="stat-card" style="padding:10px 14px;">
+            <div class="stat-label">Clips générés</div>
+            <div class="stat-value" style="font-size:1.1rem;">${d.outputs_total_mb} MB</div>
+          </div>
+        </div>
+        <div style="padding:10px 14px;border-radius:8px;border:1px solid var(--border);
+                    font-size:.83rem;color:var(--muted);line-height:1.6;">
+          <span style="color:var(--accent2);font-weight:700;">⚙️ Mode auto :</span>
+          Suppression des fichiers de +6h toutes les 6h<br>
+          <span style="color:var(--accent2);font-weight:700;">🗑️ Si lancé maintenant :</span>
+          <strong style="color:var(--text);">${data.would_delete_count} élément(s)</strong>
+          libérant <strong style="color:var(--text);">${data.would_free}</strong>
+        </div>`;
+    } catch(e) {
+      document.getElementById('cleanup-info').innerHTML =
+        `<div style="color:#fe6b85;">Erreur : ${e.message}</div>`;
+    }
+  }
+
+  async function triggerCleanup() {
+    const btn    = document.getElementById('cleanup-btn');
+    const result = document.getElementById('cleanup-result');
+    btn.textContent = 'Nettoyage…';
+    btn.disabled    = true;
+    result.style.display = 'none';
+    try {
+      const res  = await fetch('/api/cleanup?max_age_hours=6', { method: 'POST' });
+      const data = await res.json();
+      result.style.display = 'block';
+      result.innerHTML = data.deleted_items === 0
+        ? '✅ Cache déjà propre — aucun fichier de plus de 6h trouvé.'
+        : `✅ Nettoyage terminé : <strong>${data.deleted_items} élément(s)</strong> supprimé(s),
+           <strong>${data.freed}</strong> libérés.` +
+          (data.errors.length
+            ? `<br><span style="color:#fe6b85;">⚠️ ${data.errors.length} erreur(s) : ${data.errors[0]}</span>`
+            : '');
+      loadCleanupStats();
+      loadStats();
+    } catch(e) {
+      result.style.display = 'block';
+      result.style.borderColor = 'rgba(254,107,133,.4)';
+      result.style.color       = '#fe6b85';
+      result.innerHTML = '❌ Erreur : ' + e.message;
+    }
+    btn.textContent = '▶ Lancer maintenant';
+    btn.disabled    = false;
+  }
+
   // Auto-load on page open + auto-refresh every 10s
   loadStats();
+  loadCleanupStats();
   setInterval(loadStats, 10000);
+  setInterval(loadCleanupStats, 30000);

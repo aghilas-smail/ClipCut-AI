@@ -21,6 +21,7 @@ from api.download import router as download_router
 from api.admin    import router as admin_router
 from api.estimate import router as estimate_router
 from api.upload   import router as upload_router
+from api.cleanup  import router as cleanup_router, auto_cleanup_loop
 
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="ClipCut AI", version="3.0.0")
@@ -39,6 +40,7 @@ app.include_router(download_router, prefix="/api")
 app.include_router(admin_router,    prefix="/api")
 app.include_router(estimate_router, prefix="/api")
 app.include_router(upload_router,   prefix="/api")
+app.include_router(cleanup_router,  prefix="/api")
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
@@ -61,6 +63,11 @@ async def startup():
         trans_mod.preload,
         DEFAULT_WHISPER_MODEL,
     )
+
+    # 4. Launch auto-cleanup background task (every 6h)
+    asyncio.ensure_future(auto_cleanup_loop())
+    print("[ClipCut] Auto-cleanup activé — suppression cache toutes les 6h", flush=True)
+
     print(f"[ClipCut] v3 ready — default Whisper model: {DEFAULT_WHISPER_MODEL}",
           flush=True)
 

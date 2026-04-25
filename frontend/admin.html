@@ -72,6 +72,20 @@
     <div id="cache-list"><div class="empty">Chargement…</div></div>
   </div>
 
+  <!-- Auto-cleanup -->
+  <div class="section">
+    <h2>🧹 Nettoyage automatique
+      <button class="action-btn" onclick="triggerCleanup()"
+              id="cleanup-btn" style="margin-left:12px;background:var(--accent2);">
+        ▶ Lancer maintenant
+      </button>
+    </h2>
+    <div id="cleanup-info"><div class="empty">Chargement…</div></div>
+    <div id="cleanup-result" style="display:none;margin-top:12px;padding:12px 16px;
+         border-radius:9px;background:rgba(52,199,89,.08);border:1px solid rgba(52,199,89,.25);
+         font-size:.85rem;color:#34c759;"></div>
+  </div>
+
 </div>
 
 <script src="/js/admin.js" defer></script>

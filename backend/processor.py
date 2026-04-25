@@ -1023,6 +1023,11 @@ Reply ONLY with JSON: {{"clips": [{{"start": 12.5, "end": 48.3, "title": "Title"
                 src_w, src_h = s["width"], s["height"]; break
 
         tgt_w, tgt_h = 1080, 1920
+        
+        # Validate start and end times
+        total_duration = self._get_video_duration(video_path)
+        if start < 0 or end > total_duration:
+            raise ValueError("Invalid start/end times for clip generation")
 
         # Face tracking + smart zoom
         face_rect = None
