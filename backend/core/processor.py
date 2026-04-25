@@ -30,7 +30,8 @@ class VideoProcessor:
                  face_tracking=False, smart_zoom=False,
                  music_track=None, music_volume=0.15,
                  whisper_model="base", watermark="",
-                 silence_removal=False, add_hook=False, webhook_url=""):
+                 silence_removal=False, add_hook=False, webhook_url="",
+                 visual_enhance="none"):
         self.job_id          = job_id
         self.jobs            = jobs
         self.openai_key      = openai_key
@@ -44,6 +45,7 @@ class VideoProcessor:
         self.silence_removal = silence_removal
         self.add_hook        = add_hook
         self.webhook_url     = webhook_url
+        self.visual_enhance  = visual_enhance
         self.job_dir         = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(self.job_dir, exist_ok=True)
 
@@ -53,9 +55,17 @@ class VideoProcessor:
         job  = self.jobs[self.job_id]
         logs = job.setdefault("logs", [])
         ts   = datetime.now().strftime("%H:%M:%S")
-        logs.append(f"[{ts}] {message}")
+        line = f"[{ts}] {message}"
+        logs.append(line)
         if len(logs) > 300:
             job["logs"] = logs[-300:]
+        # ── Persist to log file (always readable after job ends) ──────────
+        try:
+            log_path = os.path.join(self.job_dir, "job.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def _update(self, status, progress, message):
         job = self.jobs[self.job_id]
@@ -79,12 +89,13 @@ class VideoProcessor:
 
     # ── Main pipeline ─────────────────────────────────────────────────────────
 
-    async def process(self, youtube_url, max_clips, clip_duration, language,
+    async def process(self, url_or_path, max_clips, clip_duration, language,
                       subtitle_style="elevate", video_start=None, video_end=None,
                       face_tracking=False, smart_zoom=False, subtitle_lang=None,
                       music_track=None, music_volume=0.15,
                       whisper_model="base", watermark="",
-                      silence_removal=False, add_hook=False, webhook_url=""):
+                      silence_removal=False, add_hook=False, webhook_url="",
+                      visual_enhance="none", is_local_file=False):
         loop = asyncio.get_event_loop()
         try:
             self.subtitle_style  = subtitle_style
@@ -97,14 +108,24 @@ class VideoProcessor:
             self.silence_removal = silence_removal
             self.add_hook        = add_hook
             self.webhook_url     = webhook_url
+            self.visual_enhance  = visual_enhance
 
-            # ── 1. Download ───────────────────────────────────────────────
-            self._update("processing", 5, "Téléchargement de la vidéo YouTube...")
-            self._log("yt-dlp : connexion à YouTube...")
-            video_path, title, raw_heatmap = await loop.run_in_executor(
-                None, self._download, youtube_url)
+            # ── 1. Download / Local file ──────────────────────────────────
+            if is_local_file:
+                self._update("processing", 10, "Fichier local chargé, analyse en cours...")
+                video_path = url_or_path
+                title      = os.path.basename(url_or_path)
+                raw_heatmap = []
+                self._log(f"Fichier local : {title}")
+            else:
+                from config import detect_platform
+                platform = detect_platform(url_or_path)
+                self._update("processing", 5, f"Téléchargement {platform}...")
+                self._log(f"yt-dlp : connexion à {platform}...")
+                video_path, title, raw_heatmap = await loop.run_in_executor(
+                    None, self._download, url_or_path, video_start, video_end)
             self.jobs[self.job_id]["title"] = title
-            self._log(f"Vidéo téléchargée : «{title}»")
+            self._log(f"Vidéo : «{title}»")
 
             # ── 2. Duration + initial ETA ─────────────────────────────────
             dur    = ff_mod.get_video_duration(video_path)
@@ -141,7 +162,7 @@ class VideoProcessor:
             )
 
             # ── 4. Transcription (disk cache → skip Whisper if hit) ───────
-            video_id   = extract_video_id(youtube_url)
+            video_id   = extract_video_id(url_or_path) if not is_local_file else self.job_id
             cache_key  = trans_mod.transcript_cache_key(video_id, whisper_model, hot_segs)
             transcript = trans_mod.load_transcript_cache(cache_key)
 
@@ -327,7 +348,8 @@ class VideoProcessor:
         ok = ff_mod.make_clip_onepass(
             video_path, start, end, subs, crop_filter,
             sub_out, self.job_dir, index,
-            watermark=self.watermark, tgt_h=tgt_h, log_fn=self._log
+            watermark=self.watermark, tgt_h=tgt_h,
+            visual_enhance=self.visual_enhance, log_fn=self._log
         )
         if not ok:
             self._log(f"  Clip {index+1} — ⚠️ encode échoué")
@@ -377,20 +399,43 @@ class VideoProcessor:
         if not words:
             return []
         style           = self.subtitle_style
-        WORDS_PER_GROUP = 1 if style == "oneword" else 4
-        groups          = [words[i:i + WORDS_PER_GROUP]
-                           for i in range(0, len(words), WORDS_PER_GROUP)]
+        WORDS_PER_GROUP = 1 if style in ("oneword", "pop", "neon") else 4
+        # Max silence gap before hiding subtitle (seconds)
+        SILENCE_GAP     = 0.40
+        # Small buffer after a word ends before hiding (natural feel)
+        WORD_BUFFER     = 0.12
+
+        groups = [words[i:i + WORDS_PER_GROUP]
+                  for i in range(0, len(words), WORDS_PER_GROUP)]
         result = []
         for g_idx, group in enumerate(groups):
             group_words = [w["word"] for w in group]
             for w_idx, word in enumerate(group):
-                t0 = max(0.0, word["start"] - clip_start)
+                t0       = max(0.0, word["start"] - clip_start)
+                word_end = word["end"] - clip_start
+
+                # Default: end at word's natural end + small buffer
+                t1 = word_end + WORD_BUFFER
+
                 if w_idx < len(group) - 1:
-                    t1 = max(t0 + 0.05, group[w_idx + 1]["start"] - clip_start)
+                    # Next word in same group
+                    next_start = group[w_idx + 1]["start"] - clip_start
+                    gap = next_start - word_end
+                    if gap < SILENCE_GAP:
+                        t1 = next_start          # flow straight to next word
+                    else:
+                        t1 = word_end + WORD_BUFFER   # hide during silence
+
                 elif g_idx < len(groups) - 1:
-                    t1 = max(t0 + 0.05, groups[g_idx + 1][0]["start"] - clip_start)
-                else:
-                    t1 = max(t0 + 0.05, word["end"] - clip_start)
+                    # Last word in group → check gap to next group
+                    next_start = groups[g_idx + 1][0]["start"] - clip_start
+                    gap = next_start - word_end
+                    if gap < SILENCE_GAP:
+                        t1 = next_start
+                    else:
+                        t1 = word_end + WORD_BUFFER   # hide during silence
+
+                t1 = max(t0 + 0.05, t1)
 
                 png_path = os.path.join(self.job_dir,
                                         f"sub_{clip_index}_g{g_idx}_w{w_idx}.png")
@@ -404,36 +449,47 @@ class VideoProcessor:
 
     # ── Download ───────────────────────────────────────────────────────────────
 
-    def _download(self, url):
+    def _download(self, url, video_start=None, video_end=None):
         import json
-        video_id   = extract_video_id(url)
-        cache_path = os.path.join(CACHE_DIR, f"{video_id}.mp4")
-        meta_path  = os.path.join(CACHE_DIR, f"{video_id}.json")
 
-        # Shared yt-dlp options — use web+android clients to avoid JS-runtime warning.
+        video_id = extract_video_id(url)
+
+        # Interval suffix → separate cache entry only when start > 0
+        # (start=0 + end=X is equivalent to just trimming the end — full cache still valid)
+        interval_suffix = ""
+        has_interval = (video_end is not None and
+                        video_start is not None and video_start > 0)
+        if has_interval:
+            interval_suffix = f"_{int(video_start)}-{int(video_end)}"
+        elif video_end is not None and (video_start is None or video_start == 0):
+            # Only end specified → trim suffix only
+            interval_suffix = f"_0-{int(video_end)}"
+
+        cache_path = os.path.join(CACHE_DIR, f"{video_id}{interval_suffix}.mp4")
+        meta_path  = os.path.join(CACHE_DIR, f"{video_id}.json")  # metadata shared
+
+        # ── yt-dlp common options (web+android avoids JS-runtime warning) ──
         _COMMON_OPTS = {
             "quiet":       True,
             "no_warnings": True,
-            "extractor_args": {
-                "youtube": {"player_client": ["web", "android"]}
-            },
+            "extractor_args": {"youtube": {"player_client": ["web", "android"]}},
         }
 
+        # ── Cache hit ─────────────────────────────────────────────────────
         if os.path.exists(cache_path) and os.path.getsize(cache_path) > 100_000:
             self._update("processing", 10, "Vidéo trouvée dans le cache, skip téléchargement...")
-            # Load saved metadata (no network call — instant)
             if os.path.exists(meta_path):
                 try:
                     with open(meta_path, "r", encoding="utf-8") as f:
                         saved = json.load(f)
-                    self._log(f"Métadonnées chargées depuis cache ({saved.get('title', video_id)[:40]})")
+                    self._log(f"Métadonnées depuis cache : «{saved.get('title', video_id)[:40]}»")
                     return cache_path, saved.get("title", video_id), saved.get("heatmap") or []
                 except Exception:
                     pass
-            # Fallback: metadata file missing — return without heatmap to stay fast
-            self._log("Cache vidéo trouvé (pas de métadonnées sauvegardées)")
+            self._log("Cache vidéo trouvé (métadonnées absentes, heatmap ignoré)")
             return cache_path, video_id, []
 
+        # ── Build yt-dlp options ──────────────────────────────────────────
         ydl_opts = {
             **_COMMON_OPTS,
             "format": (
@@ -444,16 +500,27 @@ class VideoProcessor:
                 "/bestvideo[vcodec^=avc]+bestaudio"
                 "/best[ext=mp4]/best"
             ),
-            "outtmpl":              cache_path,
-            "merge_output_format":  "mp4",
+            "outtmpl":             cache_path,
+            "merge_output_format": "mp4",
         }
+
+        # Interval download — only fetch the requested section (e.g. 0h→1h of a 3h podcast)
+        if video_start is not None and video_end is not None:
+            def _sec_to_hhmmss(s):
+                h = int(s // 3600); m = int((s % 3600) // 60); sec = int(s % 60)
+                return f"{h:02d}:{m:02d}:{sec:02d}"
+            section = f"*{_sec_to_hhmmss(video_start)}-{_sec_to_hhmmss(video_end)}"
+            ydl_opts["download_sections"] = section
+            ydl_opts["force_keyframes_at_cuts"] = True
+            self._log(f"⚡ Téléchargement partiel : {section} (économie bande passante)")
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             meta = ydl.extract_info(url, download=True)
 
         title   = meta.get("title", "Untitled")
         heatmap = meta.get("heatmap") or []
 
-        # Save metadata alongside the video so future cache hits are instant
+        # Save metadata for instant cache hits next time
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)

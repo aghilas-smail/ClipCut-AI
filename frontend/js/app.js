@@ -1,14 +1,16 @@
     // ── State ──────────────────────────────────────────────────────────────
-    let currentJobId   = null;
-    let pollInterval   = null;
-    let logInterval    = null;
-    let etaInterval    = null;
-    let logOffset      = 0;
-    let consoleOpen    = false;
-    let playerClipIdx  = null;
-    let trimClipIdx    = null;
-    let isBatchMode    = false;
-    let batchJobIds    = [];
+    let currentJobId      = null;
+    let pollInterval      = null;
+    let logInterval       = null;
+    let etaInterval       = null;
+    let logOffset         = 0;
+    let consoleOpen       = false;
+    let playerClipIdx     = null;
+    let trimClipIdx       = null;
+    let isBatchMode       = false;
+    let isUploadMode      = false;
+    let batchJobIds       = [];
+    let uploadedVideoPath = null;   // path returned by /api/upload
     // ETA state
     let etaTotalSec    = 0;
     let etaStartedAt   = 0;   // unix ms
@@ -16,11 +18,19 @@
     // ── Pre-generation estimate ────────────────────────────────────────────
     let estimateTimer = null;
 
+    const _VIDEO_HOSTS = ['youtu','twitch.tv','kick.com','nimo.tv','tiktok.com',
+                          'instagram.com','twitter.com','x.com','facebook.com',
+                          'dailymotion.com','vimeo.com'];
+
+    function isVideoUrl(url) {
+      return _VIDEO_HOSTS.some(h => url.includes(h));
+    }
+
     function scheduleEstimate() {
       clearTimeout(estimateTimer);
-      const url = document.getElementById('yt-url').value.trim();
+      const url  = document.getElementById('yt-url').value.trim();
       const card = document.getElementById('estimate-card');
-      if (!url || !url.includes('youtu')) {
+      if (!url || !isVideoUrl(url)) {
         card.style.display = 'none';
         return;
       }
@@ -181,13 +191,61 @@
       if (v === 'history') loadHistory();
     }
 
-    // ── Mode switch (single / batch) ───────────────────────────────────────
+    // ── Visual preset selector ─────────────────────────────────────────────
+    function selectVisual(el) {
+      document.querySelectorAll('#visual-picker .style-card').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    // ── Mode switch (single / batch / upload) ──────────────────────────────
     function switchMode(m) {
-      isBatchMode = m === 'batch';
-      document.getElementById('tab-single').classList.toggle('active', !isBatchMode);
-      document.getElementById('tab-batch').classList.toggle('active', isBatchMode);
-      document.getElementById('single-url-group').style.display = isBatchMode ? 'none' : '';
-      document.getElementById('batch-url-group').style.display  = isBatchMode ? '' : 'none';
+      isBatchMode  = m === 'batch';
+      isUploadMode = m === 'upload';
+      ['single','batch','upload'].forEach(id => {
+        document.getElementById('tab-' + id).classList.toggle('active', m === id);
+      });
+      document.getElementById('single-url-group').style.display = m === 'single' ? '' : 'none';
+      document.getElementById('batch-url-group').style.display  = m === 'batch'  ? '' : 'none';
+      document.getElementById('upload-group').style.display     = m === 'upload' ? '' : 'none';
+      // Hide estimate card in upload mode
+      document.getElementById('estimate-card').style.display    = m === 'single' ? '' : 'none';
+    }
+
+    // ── File upload helpers ────────────────────────────────────────────────
+    function handleFileDrop(e) {
+      e.preventDefault();
+      document.getElementById('drop-zone').style.borderColor = 'var(--border)';
+      const file = e.dataTransfer.files[0];
+      if (file) handleFileSelect(file);
+    }
+
+    async function handleFileSelect(file) {
+      if (!file) return;
+      const statusEl   = document.getElementById('upload-status');
+      const nameEl     = document.getElementById('upload-filename');
+      const sizeEl     = document.getElementById('upload-size');
+      const progressEl = document.getElementById('upload-progress');
+
+      nameEl.textContent     = file.name;
+      sizeEl.textContent     = `(${(file.size / 1024 / 1024).toFixed(1)} Mo)`;
+      progressEl.textContent = 'Upload en cours…';
+      statusEl.style.display = 'block';
+      uploadedVideoPath      = null;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res  = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Erreur upload');
+        uploadedVideoPath      = data.local_video_path;
+        progressEl.textContent = `✅ Prêt (${data.size_mb} Mo)`;
+        progressEl.style.color = 'var(--ok, #4ade80)';
+      } catch (err) {
+        progressEl.textContent = `❌ ${err.message}`;
+        progressEl.style.color = 'var(--error, #f87171)';
+      }
     }
 
     function addUrl() {
@@ -287,11 +345,11 @@
 
     // ── Start processing ───────────────────────────────────────────────────
     async function startProcessing() {
-      const key          = document.getElementById('api-key').value.trim();
       const maxClips     = parseInt(document.getElementById('max-clips').value);
       const clipDuration = parseInt(document.getElementById('clip-duration').value);
       const language     = document.getElementById('language').value;
-      const subtitleStyle= document.querySelector('.style-card.active')?.dataset.style || 'elevate';
+      const subtitleStyle= document.querySelector('#style-picker .style-card.active')?.dataset.style || 'elevate';
+      const visualEnhance= document.querySelector('#visual-picker .style-card.active')?.dataset.enhance || 'none';
       const subtitleLang = document.getElementById('subtitle-lang').value;
       const faceTracking = document.getElementById('face-tracking').checked;
       const smartZoom    = document.getElementById('smart-zoom').checked;
@@ -305,25 +363,39 @@
       const musicVolume  = parseFloat(document.getElementById('music-volume').value);
       const webhookUrl   = document.getElementById('webhook-url').value.trim();
 
-      if (!key) return alert('Veuillez entrer votre clé API OpenAI.');
-
       const basePayload = {
-        openai_api_key: key, max_clips: maxClips, clip_duration: clipDuration,
+        max_clips: maxClips, clip_duration: clipDuration,
         language, subtitle_style: subtitleStyle, subtitle_lang: subtitleLang,
         face_tracking: faceTracking, smart_zoom: smartZoom,
         silence_removal: silenceRemoval, add_hook: addHook,
         video_start: videoStart, video_end: videoEnd,
         whisper_model: whisperModel, watermark, music_track: musicTrack,
         music_volume: musicVolume, webhook_url: webhookUrl,
+        visual_enhance: visualEnhance,
       };
 
       resetUI();
       setBusy(true);
-
       startLogPolling();
+
       try {
-        if (isBatchMode) {
-          // Collect all non-empty URLs
+        if (isUploadMode) {
+          // Upload mode
+          if (!uploadedVideoPath) {
+            setBusy(false);
+            return alert('Veuillez d\'abord uploader une vidéo.');
+          }
+          const res  = await fetch('/api/process', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ local_video_path: uploadedVideoPath, ...basePayload }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.detail || 'Erreur serveur');
+          currentJobId = data.job_id;
+          pollInterval = setInterval(pollStatus, 2500);
+
+        } else if (isBatchMode) {
+          // Batch URL mode
           const urls = Array.from(document.querySelectorAll('#url-list input'))
                             .map(i => i.value.trim()).filter(Boolean);
           if (!urls.length) { setBusy(false); return alert('Ajoutez au moins une URL.'); }
@@ -333,13 +405,15 @@
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.detail || 'Erreur serveur');
-          batchJobIds = data.jobs.map(j => j.job_id);
-          currentJobId = batchJobIds[0];  // poll first job for progress
+          batchJobIds  = data.jobs.map(j => j.job_id);
+          currentJobId = batchJobIds[0];
           setProgress(5, `Batch lancé : ${batchJobIds.length} vidéo(s) en traitement…`);
           pollInterval = setInterval(() => pollBatch(batchJobIds), 3000);
+
         } else {
+          // Single URL mode
           const url = document.getElementById('yt-url').value.trim();
-          if (!url) { setBusy(false); return alert('Veuillez coller une URL YouTube.'); }
+          if (!url) { setBusy(false); return alert('Veuillez coller une URL.'); }
           const res  = await fetch('/api/process', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ youtube_url: url, ...basePayload }),
@@ -463,6 +537,12 @@
       document.getElementById('results-count').textContent = job.clips.length;
       grid.innerHTML = '';
 
+      // Wire up log links
+      if (currentJobId) {
+        const viewLink = document.getElementById('view-logs-link');
+        if (viewLink) viewLink.href = `/api/logs/${currentJobId}/file`;
+      }
+
       job.clips.forEach((clip, i) => {
         const mins = Math.floor(clip.duration / 60);
         const secs = Math.round(clip.duration % 60);
@@ -554,6 +634,16 @@
       const a = document.createElement('a');
       a.href = `/api/download-zip/${currentJobId}`;
       a.download = 'tiktok_clips.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
+
+    function downloadLogs() {
+      if (!currentJobId) return;
+      const a = document.createElement('a');
+      a.href = `/api/logs/${currentJobId}/file?download=true`;
+      a.download = `clipcut_${currentJobId.slice(0,8)}.log`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

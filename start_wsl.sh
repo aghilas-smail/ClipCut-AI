@@ -38,11 +38,29 @@ fi
 
 echo ""
 echo "  ✂️  ClipCut AI v3 — WSL Setup"
-echo "  ───────────────────────────────────���─────────────────"
+echo "  ──────────────────────────────────────────────────────"
 
 # Resolve project directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# ── Load .env ──────────────────────────────────────────────────────────────
+ENV_FILE="$SCRIPT_DIR/backend/.env"
+if [ -f "$ENV_FILE" ]; then
+  echo "  🔑 Chargement backend/.env..."
+  # Convert Windows CRLF → LF before sourcing (avoids $'\r' errors)
+  _ENV_CLEAN=$(sed 's/\r//' "$ENV_FILE")
+  set -a
+  eval "$_ENV_CLEAN" 2>/dev/null || true
+  set +a
+else
+  echo "  ⚠️  backend/.env absent — copie de .env.example..."
+  cp "$SCRIPT_DIR/backend/.env.example" "$ENV_FILE" 2>/dev/null || true
+  echo "     → Édite backend/.env et ajoute OPENAI_API_KEY=sk-... puis relance."
+fi
+if [ -z "$OPENAI_API_KEY" ]; then
+  echo "  ⚠️  OPENAI_API_KEY non définie (les traitements échoueront jusqu'à config)"
+fi
 
 # 1. Install system dependencies
 echo "  📦 Installing system dependencies..."

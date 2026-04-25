@@ -107,9 +107,25 @@ def build_crop_filter(src_w, src_h, face_rect=None, smart_zoom=False,
 
 # -- Single-pass clip generation -------------------------------------------------
 
+# ── Visual enhancement presets ──────────────────────────────────────────────
+_VISUAL_FILTERS = {
+    "none":      "",
+    # Auto-enhance: slight brightness lift + contrast + saturation + sharpening
+    "auto":      "eq=brightness=0.04:contrast=1.12:saturation=1.25,unsharp=3:3:0.6:3:3:0",
+    # Vibrant: punchy colors and contrast for social media
+    "vibrant":   "eq=contrast=1.30:saturation=1.60:brightness=0.05,unsharp=5:5:0.5:5:5:0",
+    # Cinematic: warm desaturated look, slightly crushed blacks
+    "cinematic": "eq=gamma=0.92:contrast=1.18:saturation=0.82:brightness=-0.02,"
+                 "colorbalance=rs=0.05:gs=-0.02:bs=-0.04:rm=0.03:gm=0:bm=-0.03",
+    # Dramatic: high contrast black-and-white inspired, punchy
+    "dramatic":  "eq=contrast=1.45:saturation=0.70:brightness=-0.04,unsharp=5:5:1.0:5:5:0",
+}
+
+
 def make_clip_onepass(video_path, start, end, subs, crop_filter,
                       out_path, job_dir, clip_index,
-                      watermark="", tgt_h=1920, log_fn=None) -> bool:
+                      watermark="", tgt_h=1920, visual_enhance="none",
+                      log_fn=None) -> bool:
     """
     Single ffmpeg pass: seek + crop/scale + subtitle overlay + watermark + encode.
     Audio fade-in (2.5 s) and fade-out (3 s) applied automatically.
@@ -118,8 +134,14 @@ def make_clip_onepass(video_path, start, end, subs, crop_filter,
     filter_parts = []
     clip_len     = end - start
 
-    # Step 1: crop + scale to 9:16
-    filter_parts.append(f"[0:v]{crop_filter}[base]")
+    # Step 1: crop + scale to 9:16, then optional visual enhancement
+    vf_extra = _VISUAL_FILTERS.get(visual_enhance or "none", "")
+    if vf_extra:
+        filter_parts.append(f"[0:v]{crop_filter},{vf_extra}[base]")
+        if log_fn:
+            log_fn(f"   🎨 Filtre visuel : {visual_enhance}")
+    else:
+        filter_parts.append(f"[0:v]{crop_filter}[base]")
 
     if subs:
         for sub in subs:

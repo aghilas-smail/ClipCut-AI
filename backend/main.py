@@ -20,6 +20,7 @@ from api.status   import router as status_router
 from api.download import router as download_router
 from api.admin    import router as admin_router
 from api.estimate import router as estimate_router
+from api.upload   import router as upload_router
 
 # ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="ClipCut AI", version="3.0.0")
@@ -37,6 +38,7 @@ app.include_router(status_router,   prefix="/api")
 app.include_router(download_router, prefix="/api")
 app.include_router(admin_router,    prefix="/api")
 app.include_router(estimate_router, prefix="/api")
+app.include_router(upload_router,   prefix="/api")
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
