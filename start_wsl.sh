@@ -74,6 +74,20 @@ sudo apt-get install -y -qq \
 echo "  ✅ ffmpeg $(ffmpeg -version 2>&1 | head -1 | awk '{print $3}')"
 echo "  ✅ node  $(node --version 2>/dev/null || echo 'not found')"
 
+# ── Deno (JS runtime pour yt-dlp — résout les n challenges YouTube) ───────
+export DENO_INSTALL="$HOME/.deno"
+export PATH="$DENO_INSTALL/bin:$PATH"
+if ! command -v deno &>/dev/null; then
+  echo "  📦 Installation de deno (JS runtime pour yt-dlp)..."
+  curl -fsSL https://deno.land/install.sh | sh > /dev/null 2>&1
+  # S'assure que deno est dans ~/.bashrc pour les sessions futures
+  grep -qxF 'export DENO_INSTALL="$HOME/.deno"' ~/.bashrc \
+    || echo 'export DENO_INSTALL="$HOME/.deno"' >> ~/.bashrc
+  grep -qxF 'export PATH="$DENO_INSTALL/bin:$PATH"' ~/.bashrc \
+    || echo 'export PATH="$DENO_INSTALL/bin:$PATH"' >> ~/.bashrc
+fi
+echo "  ✅ deno  $(deno --version 2>/dev/null | head -1 || echo 'not found')"
+
 # 2. Virtual env (in Linux home — avoids NTFS symlink issues)
 VENV_DIR="$HOME/clipcut_venv"
 if [ ! -d "$VENV_DIR" ]; then

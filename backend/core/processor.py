@@ -21,7 +21,9 @@ from core import gpt_client  as gpt_mod
 from core import ffmpeg_utils as ff_mod
 
 # Shared executor for parallel clip generation (max 3 clips at once)
-_CLIP_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="clipcut_clip")
+# 2 workers max — 3 simultaneous ffmpeg each opening 150+ PNGs = ~450 file descriptors
+# which hits Linux's default limit of 1024 and triggers EAGAIN / "Resource unavailable"
+_CLIP_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="clipcut_clip")
 
 
 class VideoProcessor:
@@ -109,6 +111,8 @@ class VideoProcessor:
             self.add_hook        = add_hook
             self.webhook_url     = webhook_url
             self.visual_enhance  = visual_enhance
+            # Offset used to remap original-video timestamps to trimmed-file timestamps
+            self.video_offset    = float(video_start) if video_start else 0.0
 
             # ── 1. Download / Local file ──────────────────────────────────
             if is_local_file:
@@ -126,6 +130,12 @@ class VideoProcessor:
                     None, self._download, url_or_path, video_start, video_end)
             self.jobs[self.job_id]["title"] = title
             self._log(f"Vidéo : «{title}»")
+            # Log résolution réelle du fichier téléchargé
+            _dw, _dh = ff_mod.probe_video_dimensions(video_path)
+            if _dw and _dh:
+                self._log(f"ℹ️  Résolution source : {_dw}x{_dh} — crop vers 9:16 puis scale 1080x1920")
+            else:
+                self._log("⚠️  Résolution source inconnue (ffprobe échoué)")
 
             # ── 2. Duration + initial ETA ─────────────────────────────────
             dur    = ff_mod.get_video_duration(video_path)
@@ -318,12 +328,19 @@ class VideoProcessor:
         clip_path = os.path.abspath(os.path.join(self.job_dir, f"clip_{index}.mp4"))
         tgt_w, tgt_h = 1080, 1920
 
+        # When the video was downloaded as a trimmed section (download_sections),
+        # its file timestamps start at 0.  Subtract the original start offset so
+        # ffmpeg seeks to the right position inside the trimmed file.
+        offset      = getattr(self, "video_offset", 0.0)
+        seek_start  = max(0.0, start - offset)
+        seek_end    = max(seek_start + 0.1, end - offset)
+
         src_w, src_h = ff_mod.probe_video_dimensions(video_path)
 
         face_rect = None
         if self.face_tracking and src_w and src_h:
             self._log(f"  Clip {index+1} — détection de visage...")
-            face_rect = ff_mod.detect_face_crop(video_path, start, end, src_w, src_h)
+            face_rect = ff_mod.detect_face_crop(video_path, seek_start, seek_end, src_w, src_h)
 
         crop_filter = ff_mod.build_crop_filter(src_w, src_h, face_rect, self.smart_zoom)
 
@@ -346,7 +363,7 @@ class VideoProcessor:
                   os.path.join(self.job_dir, f"nosub_{index}.mp4")
 
         ok = ff_mod.make_clip_onepass(
-            video_path, start, end, subs, crop_filter,
+            video_path, seek_start, seek_end, subs, crop_filter,
             sub_out, self.job_dir, index,
             watermark=self.watermark, tgt_h=tgt_h,
             visual_enhance=self.visual_enhance, log_fn=self._log
@@ -389,21 +406,60 @@ class VideoProcessor:
         for seg in transcript.get("segments", []):
             if seg["end"] < start or seg["start"] > end:
                 continue
-            for w in seg.get("words", []):
-                ws, we = w.get("start", 0), w.get("end", 0)
-                if ws >= start and we <= end + 0.5:
-                    words.append({"word": w["word"].strip(), "start": ws, "end": we})
+            seg_words = seg.get("words", [])
+            if seg_words:
+                for w in seg_words:
+                    ws, we = w.get("start", 0), w.get("end", 0)
+                    if ws >= start - 0.1 and we <= end + 0.5:
+                        words.append({"word": w["word"].strip(), "start": ws, "end": we})
+            else:
+                # Fallback: distribute segment text evenly across segment duration
+                text_words = seg.get("text", "").strip().split()
+                if not text_words:
+                    continue
+                seg_s = max(start, seg["start"])
+                seg_e = min(end, seg["end"])
+                dur   = seg_e - seg_s
+                if dur <= 0:
+                    continue
+                for wi, ww in enumerate(text_words):
+                    ws = seg_s + wi * dur / len(text_words)
+                    we = seg_s + (wi + 1) * dur / len(text_words)
+                    words.append({"word": ww, "start": ws, "end": we})
         return words
 
     def _render_subtitle_pngs(self, words, clip_start, clip_index, video_w):
         if not words:
             return []
+
+        # Cap word count to 50 max — ffmpeg chains N overlay ops in series:
+        # 167 overlays makes the filtergraph huge (hang + EAGAIN on parallel clips).
+        # 50 words on a 45s clip = one subtitle every ~0.9s, perfectly readable.
+        MAX_WORDS = 50
+        if len(words) > MAX_WORDS:
+            step  = len(words) / MAX_WORDS
+            words = [words[int(i * step)] for i in range(MAX_WORDS)]
+
+        # After thinning, extend each word's natural end to bridge the gap to the
+        # next selected word (when the person is still talking between the two).
+        # Without this, the subtitle hides mid-speech because skipped words have no PNG.
+        MAX_BRIDGE_GAP = 2.0   # seconds — beyond this it's a real pause, don't bridge
+        for i in range(len(words) - 1):
+            gap = words[i + 1]["start"] - words[i]["end"]
+            if gap < MAX_BRIDGE_GAP:
+                words[i]["_display_end"] = words[i + 1]["start"]
+            else:
+                words[i]["_display_end"] = words[i]["end"] + 0.4
+        if words:
+            words[-1]["_display_end"] = words[-1]["end"] + 0.4
+
         style           = self.subtitle_style
         WORDS_PER_GROUP = 1 if style in ("oneword", "pop", "neon") else 4
-        # Max silence gap before hiding subtitle (seconds)
-        SILENCE_GAP     = 0.40
-        # Small buffer after a word ends before hiding (natural feel)
-        WORD_BUFFER     = 0.12
+        # A pause must be longer than this to hide the subtitle between two words.
+        # 0.80s covers natural speech rhythm; 0.40 was too aggressive.
+        SILENCE_GAP     = 0.80
+        # Buffer after the last word of a group before hiding
+        WORD_BUFFER     = 0.30
 
         groups = [words[i:i + WORDS_PER_GROUP]
                   for i in range(0, len(words), WORDS_PER_GROUP)]
@@ -414,9 +470,6 @@ class VideoProcessor:
                 t0       = max(0.0, word["start"] - clip_start)
                 word_end = word["end"] - clip_start
 
-                # Default: end at word's natural end + small buffer
-                t1 = word_end + WORD_BUFFER
-
                 if w_idx < len(group) - 1:
                     # Next word in same group
                     next_start = group[w_idx + 1]["start"] - clip_start
@@ -424,16 +477,14 @@ class VideoProcessor:
                     if gap < SILENCE_GAP:
                         t1 = next_start          # flow straight to next word
                     else:
-                        t1 = word_end + WORD_BUFFER   # hide during silence
-
+                        t1 = word_end + WORD_BUFFER   # real pause → hide briefly
                 elif g_idx < len(groups) - 1:
-                    # Last word in group → check gap to next group
-                    next_start = groups[g_idx + 1][0]["start"] - clip_start
-                    gap = next_start - word_end
-                    if gap < SILENCE_GAP:
-                        t1 = next_start
-                    else:
-                        t1 = word_end + WORD_BUFFER   # hide during silence
+                    # Last word in group — use the extended display time that bridges
+                    # the gap to the next group (covers any skipped words in between)
+                    t1 = word["_display_end"] - clip_start
+                else:
+                    # Very last word of the clip
+                    t1 = word["_display_end"] - clip_start
 
                 t1 = max(t0 + 0.05, t1)
 
@@ -454,26 +505,15 @@ class VideoProcessor:
 
         video_id = extract_video_id(url)
 
-        # Interval suffix → separate cache entry only when start > 0
-        # (start=0 + end=X is equivalent to just trimming the end — full cache still valid)
+        # Separate cache entry when a time interval is requested
         interval_suffix = ""
-        has_interval = (video_end is not None and
-                        video_start is not None and video_start > 0)
-        if has_interval:
+        if video_end is not None and video_start and video_start > 0:
             interval_suffix = f"_{int(video_start)}-{int(video_end)}"
-        elif video_end is not None and (video_start is None or video_start == 0):
-            # Only end specified → trim suffix only
+        elif video_end is not None and not video_start:
             interval_suffix = f"_0-{int(video_end)}"
 
         cache_path = os.path.join(CACHE_DIR, f"{video_id}{interval_suffix}.mp4")
-        meta_path  = os.path.join(CACHE_DIR, f"{video_id}.json")  # metadata shared
-
-        # ── yt-dlp common options (web+android avoids JS-runtime warning) ──
-        _COMMON_OPTS = {
-            "quiet":       True,
-            "no_warnings": True,
-            "extractor_args": {"youtube": {"player_client": ["web", "android"]}},
-        }
+        meta_path  = os.path.join(CACHE_DIR, f"{video_id}.json")
 
         # ── Cache hit ─────────────────────────────────────────────────────
         if os.path.exists(cache_path) and os.path.getsize(cache_path) > 100_000:
@@ -489,40 +529,125 @@ class VideoProcessor:
             self._log("Cache vidéo trouvé (métadonnées absentes, heatmap ignoré)")
             return cache_path, video_id, []
 
-        # ── Build yt-dlp options ──────────────────────────────────────────
+        # ── Runtime detection ─────────────────────────────────────────────
+        # Deno is yt-dlp's preferred JS runtime for solving YouTube n-challenges.
+        # Falls back to node if deno is not installed.
+        deno_bin = shutil.which("deno") or ""
+        node_bin = shutil.which("node") or shutil.which("nodejs") or "node"
+        if deno_bin:
+            self._log(f"deno détecté : {deno_bin}")
+            js_runtimes = [f"deno:{deno_bin}"]
+        else:
+            self._log("⚠️ deno absent — utilisation de node comme fallback JS runtime")
+            js_runtimes = [f"node:{node_bin}"]
+
+        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+
+        # ── yt-dlp logger (surfaces relevant lines into the job log) ──────
+        class _YtdlLogger:
+            def __init__(self, log_fn):
+                self._fn = log_fn
+            def debug(self, msg):
+                low = msg.lower()
+                if any(k in low for k in ("format", "merge", "download", "ffmpeg", "error")):
+                    self._fn(f"[yt-dlp] {msg[:250]}")
+            def info(self, msg):
+                self._fn(f"[yt-dlp] {msg[:250]}")
+            def warning(self, msg):
+                self._fn(f"[yt-dlp] ⚠️ {msg[:250]}")
+            def error(self, msg):
+                self._fn(f"[yt-dlp] ❌ {msg[:250]}")
+
+        # ── yt-dlp options ────────────────────────────────────────────────
+        # Format cascade: prefer 1080p, accept 720p, fall back to best available.
+        # No vcodec:h264 in format_sort — YouTube serves 1080p in VP9/AV1 since 2022;
+        # preferring h264 would force a pre-merged 360p stream (format 18).
+        # ffmpeg re-encodes to H.264 during clip generation anyway.
         ydl_opts = {
-            **_COMMON_OPTS,
+            "extractor_args": {
+                "youtube": {"js_runtimes": js_runtimes},
+            },
+            "ffmpeg_location":     ffmpeg_bin,
             "format": (
-                "bestvideo[height<=1080][vcodec^=avc][ext=mp4]+bestaudio[ext=m4a]"
-                "/bestvideo[height<=1080][vcodec^=avc]+bestaudio"
-                "/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]"
-                "/bestvideo[height<=1080]+bestaudio"
-                "/bestvideo[vcodec^=avc]+bestaudio"
-                "/best[ext=mp4]/best"
+                "bestvideo[height>=1080]+bestaudio"
+                "/bestvideo[height>=720]+bestaudio"
+                "/bestvideo+bestaudio"
+                "/best"
             ),
-            "outtmpl":             cache_path,
+            "format_sort":         ["res:1080"],
             "merge_output_format": "mp4",
+            "outtmpl":             cache_path,
+            "quiet":               True,
+            "no_warnings":         False,
+            "logger":              _YtdlLogger(self._log),
         }
 
-        # Interval download — only fetch the requested section (e.g. 0h→1h of a 3h podcast)
+        # Partial download — only fetch the requested time range
         if video_start is not None and video_end is not None:
             def _sec_to_hhmmss(s):
                 h = int(s // 3600); m = int((s % 3600) // 60); sec = int(s % 60)
                 return f"{h:02d}:{m:02d}:{sec:02d}"
             section = f"*{_sec_to_hhmmss(video_start)}-{_sec_to_hhmmss(video_end)}"
-            ydl_opts["download_sections"] = section
+            ydl_opts["download_sections"]      = section
             ydl_opts["force_keyframes_at_cuts"] = True
-            self._log(f"⚡ Téléchargement partiel : {section} (économie bande passante)")
+            self._log(f"⚡ Téléchargement partiel : {section}")
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             meta = ydl.extract_info(url, download=True)
 
         title   = meta.get("title", "Untitled")
         heatmap = meta.get("heatmap") or []
+        self._log(
+            f"yt-dlp format selectionne : {meta.get('format_id','?')} | "
+            f"{meta.get('width','?')}x{meta.get('height','?')} | "
+            f"vcodec={meta.get('vcodec','?')}"
+        )
 
-        # Save metadata for instant cache hits next time
+        # Persist metadata for cache hits
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return cache_path, title, heatmap
+
+    # ── Webhook ────────────────────────────────────────────────────────────────
+
+    def _fire_webhook(self, webhook_url, job_id, clip_count):
+        import urllib.request, json
+        try:
+            payload = json.dumps({"event": "clips_ready", "job_id": job_id,
+                                  "clip_count": clip_count}).encode()
+            req = urllib.request.Request(
+                webhook_url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
+             json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return cache_path, title, heatmap
+
+    # -- Webhook -------------------------------------------------------------------
+
+    def _fire_webhook(self, webhook_url, job_id, clip_count):
+        import urllib.request, json
+        try:
+            payload = json.dumps({"event": "clips_ready", "job_id": job_id,
+                                  "clip_count": clip_count}).encode()
+            req = urllib.request.Request(
+                webhook_url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
                 json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
         except Exception:
             pass
