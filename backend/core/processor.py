@@ -529,19 +529,19 @@ class VideoProcessor:
             self._log("Cache vidéo trouvé (métadonnées absentes, heatmap ignoré)")
             return cache_path, video_id, []
 
-        # ── Runtime detection ─────────────────────────────────────────────
-        # Deno is yt-dlp's preferred JS runtime for solving YouTube n-challenges.
-        # Falls back to node if deno is not installed.
+        # ── Runtime detection (JS fallback seulement — player_client=android est prioritaire) ──
         deno_bin = shutil.which("deno") or ""
-        node_bin = shutil.which("node") or shutil.which("nodejs") or "node"
+        node_bin = shutil.which("node") or shutil.which("nodejs") or ""
         if deno_bin:
-            self._log(f"deno détecté : {deno_bin}")
             js_runtimes = [f"deno:{deno_bin}"]
-        else:
-            self._log("⚠️ deno absent — utilisation de node comme fallback JS runtime")
+        elif node_bin:
             js_runtimes = [f"node:{node_bin}"]
+        else:
+            js_runtimes = []
 
-        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        # ffmpeg_location : utiliser uniquement ce que le PATH fournit
+        # BUG FIX : ne pas forcer "/usr/bin/ffmpeg" (chemin Linux invalide sur Windows)
+        ffmpeg_bin = shutil.which("ffmpeg")  # None si absent du PATH
 
         # ── yt-dlp logger (surfaces relevant lines into the job log) ──────
         class _YtdlLogger:
@@ -559,15 +559,15 @@ class VideoProcessor:
                 self._fn(f"[yt-dlp] ❌ {msg[:250]}")
 
         # ── yt-dlp options ────────────────────────────────────────────────
-        # Format cascade: prefer 1080p, accept 720p, fall back to best available.
-        # No vcodec:h264 in format_sort — YouTube serves 1080p in VP9/AV1 since 2022;
-        # preferring h264 would force a pre-merged 360p stream (format 18).
-        # ffmpeg re-encodes to H.264 during clip generation anyway.
+        # player_client=android : évite les n-challenges YouTube sans JS runtime
+        # js_runtimes en fallback seulement si android client échoue
+        # socket_timeout=30 : évite les blocages réseau indéfinis (BUG FIX)
+        extractor_args: dict = {"player_client": ["web", "android"]}
+        if js_runtimes:
+            extractor_args["js_runtimes"] = js_runtimes
+
         ydl_opts = {
-            "extractor_args": {
-                "youtube": {"js_runtimes": js_runtimes},
-            },
-            "ffmpeg_location":     ffmpeg_bin,
+            "extractor_args":      {"youtube": extractor_args},
             "format": (
                 "bestvideo[height>=1080]+bestaudio"
                 "/bestvideo[height>=720]+bestaudio"
@@ -579,8 +579,11 @@ class VideoProcessor:
             "outtmpl":             cache_path,
             "quiet":               True,
             "no_warnings":         False,
+            "socket_timeout":      30,   # BUG FIX : timeout réseau pour éviter blocage
             "logger":              _YtdlLogger(self._log),
         }
+        if ffmpeg_bin:
+            ydl_opts["ffmpeg_location"] = ffmpeg_bin  # BUG FIX : ne définir que si trouvé
 
         # Partial download — only fetch the requested time range
         if video_start is not None and video_end is not None:
@@ -606,48 +609,6 @@ class VideoProcessor:
         # Persist metadata for cache hits
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-        return cache_path, title, heatmap
-
-    # ── Webhook ────────────────────────────────────────────────────────────────
-
-    def _fire_webhook(self, webhook_url, job_id, clip_count):
-        import urllib.request, json
-        try:
-            payload = json.dumps({"event": "clips_ready", "job_id": job_id,
-                                  "clip_count": clip_count}).encode()
-            req = urllib.request.Request(
-                webhook_url, data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
-        except Exception:
-            pass
-             json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-        return cache_path, title, heatmap
-
-    # -- Webhook -------------------------------------------------------------------
-
-    def _fire_webhook(self, webhook_url, job_id, clip_count):
-        import urllib.request, json
-        try:
-            payload = json.dumps({"event": "clips_ready", "job_id": job_id,
-                                  "clip_count": clip_count}).encode()
-            req = urllib.request.Request(
-                webhook_url, data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
-        except Exception:
-            pass
                 json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
         except Exception:
             pass
