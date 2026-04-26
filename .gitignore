@@ -5,3 +5,4 @@
 /backend/__pycache__
 /backend/api/__pycache__
 /backend/core/__pycache__
+/backend/.env
