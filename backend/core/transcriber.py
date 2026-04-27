@@ -115,7 +115,18 @@ def transcribe_faster(audio_path: str, language, model_name: str, log_fn=None) -
         log_fn("Transcription en cours (faster-whisper, VAD activé)...")
     segments_iter, info = model.transcribe(
         audio_path, language=lang,
-        word_timestamps=True, vad_filter=True,
+        word_timestamps=True,
+        vad_filter=True,
+        vad_parameters={
+            "threshold": 0.30,              # moins agressif (défaut 0.50) — évite de couper les mots courts
+            "min_silence_duration_ms": 500,  # silence minimum avant coupure (défaut 100ms trop court)
+            "speech_pad_ms": 400,            # padding autour des zones speech — capture les débuts/fins de mots
+        },
+        beam_size=5,
+        no_speech_threshold=0.60,           # moins strict — garde plus de segments borderline
+        compression_ratio_threshold=2.4,    # moins strict — réduit les faux rejects
+        condition_on_previous_text=True,    # contexte améliore la précision
+        temperature=0.0,                    # déterministe — meilleure reproductibilité
     )
     segments = []
     for seg in segments_iter:
