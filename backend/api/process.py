@@ -38,6 +38,8 @@ class ProcessRequest(BaseModel):
     add_hook:         bool  = False
     webhook_url:      str   = ""
     visual_enhance:   str   = "none"   # none | auto | vibrant | cinematic | dramatic
+    enable_subtitles: bool  = True     # False = clips sans sous-titres
+    speed_factor:     float = 1.0      # 1.0 | 2.0 | 3.0
 
 
 class BatchRequest(BaseModel):
@@ -128,7 +130,9 @@ async def process_video(request: ProcessRequest,
         silence_removal = request.silence_removal,
         add_hook        = request.add_hook,
         webhook_url     = request.webhook_url,
-        visual_enhance  = request.visual_enhance,
+        visual_enhance    = request.visual_enhance,
+        enable_subtitles  = request.enable_subtitles,
+        speed_factor      = request.speed_factor,
     )
 
     url_or_path = request.local_video_path or request.youtube_url
@@ -153,6 +157,8 @@ async def process_video(request: ProcessRequest,
         add_hook          = request.add_hook,
         webhook_url       = request.webhook_url,
         visual_enhance    = request.visual_enhance,
+        enable_subtitles  = request.enable_subtitles,
+        speed_factor      = request.speed_factor,
         is_local_file     = bool(request.local_video_path),
     )
     return {"job_id": job_id}
@@ -179,11 +185,4 @@ async def process_batch(request: BatchRequest,
         background_tasks.add_task(
             _run_and_persist, processor,
             url, request.max_clips, request.clip_duration, request.language,
-            subtitle_style  = request.subtitle_style,
-            whisper_model   = request.whisper_model,
-            watermark       = request.watermark,
-            silence_removal = request.silence_removal,
-            visual_enhance  = "none",
-        )
-        job_ids.append({"url": url, "job_id": job_id})
-    return {"jobs": job_ids}
+      

@@ -328,7 +328,12 @@
     }
 
     function selectStyle(el) {
-      document.querySelectorAll('.style-card').forEach(c => c.classList.remove('active'));
+      document.querySelectorAll('#style-picker .style-card').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+    }
+
+    function selectSpeed(el) {
+      document.querySelectorAll('#speed-picker .style-card').forEach(c => c.classList.remove('active'));
       el.classList.add('active');
     }
 
@@ -345,27 +350,31 @@
 
     // ── Start processing ───────────────────────────────────────────────────
     async function startProcessing() {
-      const maxClips     = parseInt(document.getElementById('max-clips').value);
-      const clipDuration = parseInt(document.getElementById('clip-duration').value);
-      const language     = document.getElementById('language').value;
-      const subtitleStyle= document.querySelector('#style-picker .style-card.active')?.dataset.style || 'elevate';
-      const visualEnhance= document.querySelector('#visual-picker .style-card.active')?.dataset.enhance || 'none';
-      const subtitleLang = document.getElementById('subtitle-lang').value;
-      const faceTracking = document.getElementById('face-tracking').checked;
-      const smartZoom    = document.getElementById('smart-zoom').checked;
-      const silenceRemoval= document.getElementById('silence-removal').checked;
-      const addHook      = document.getElementById('add-hook').checked;
-      const videoStart   = parseTime(document.getElementById('video-start').value);
-      const videoEnd     = parseTime(document.getElementById('video-end').value);
-      const whisperModel = document.getElementById('whisper-model').value;
-      const watermark    = document.getElementById('watermark').value.trim();
-      const musicTrack   = document.getElementById('music-track').value.trim();
-      const musicVolume  = parseFloat(document.getElementById('music-volume').value);
-      const webhookUrl   = document.getElementById('webhook-url').value.trim();
+      const maxClips       = parseInt(document.getElementById('max-clips').value);
+      const clipDuration   = parseInt(document.getElementById('clip-duration').value);
+      const language       = document.getElementById('language').value;
+      const subtitleStyle  = document.querySelector('#style-picker .style-card.active')?.dataset.style || 'elevate';
+      const visualEnhance  = document.querySelector('#visual-picker .style-card.active')?.dataset.enhance || 'none';
+      const speedFactor    = parseFloat(document.querySelector('#speed-picker .style-card.active')?.dataset.speed || '1');
+      const subtitleLang   = document.getElementById('subtitle-lang').value;
+      const enableSubtitles= document.getElementById('enable-subtitles').checked;
+      const faceTracking   = document.getElementById('face-tracking').checked;
+      const smartZoom      = document.getElementById('smart-zoom').checked;
+      const silenceRemoval = document.getElementById('silence-removal').checked;
+      const addHook        = document.getElementById('add-hook').checked;
+      const videoStart     = parseTime(document.getElementById('video-start').value);
+      const videoEnd       = parseTime(document.getElementById('video-end').value);
+      const whisperModel   = document.getElementById('whisper-model').value;
+      const watermark      = document.getElementById('watermark').value.trim();
+      const musicTrack     = document.getElementById('music-track').value.trim();
+      const musicVolume    = parseFloat(document.getElementById('music-volume').value);
+      const webhookUrl     = document.getElementById('webhook-url').value.trim();
 
       const basePayload = {
         max_clips: maxClips, clip_duration: clipDuration,
         language, subtitle_style: subtitleStyle, subtitle_lang: subtitleLang,
+        enable_subtitles: enableSubtitles,
+        speed_factor: speedFactor,
         face_tracking: faceTracking, smart_zoom: smartZoom,
         silence_removal: silenceRemoval, add_hook: addHook,
         video_start: videoStart, video_end: videoEnd,
@@ -756,16 +765,4 @@
     // Ask for notification permission as soon as the page loads
     requestNotifPermission();
 
-    // ── Keyboard / click listeners ─────────────────────────────────────────
-    document.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('player-overlay').addEventListener('click', function(e) {
-        if (e.target === this) closePlayer();
-      });
-      document.getElementById('trim-overlay').addEventListener('click', function(e) {
-        if (e.target === this) closeTrim();
-      });
-    });
-
-    document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { closePlayer(); closeTrim(); }
-    });
+    // ── Keyboard / click listeners ──────────────────────────────

@@ -6,6 +6,10 @@ New features vs v2 monolith:
   3. Transcript disk cache     — skip Whisper on repeated requests for same video
   4. Whisper RAM cache + mmap  — via transcriber module (loaded once, reused)
   5. Server startup preload    — via transcriber.preload() in main.py
+feat/hostfix1 additions:
+  6. enable_subtitles          — désactiver complètement les sous-titres
+  7. speed_factor              — accélération x1 / x2 / x3 via setpts + atempo
+  8. Smart zoom dynamique      — face tracking multi-frames + crop expression ffmpeg
 """
 import asyncio, os, shutil, time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,22 +37,25 @@ class VideoProcessor:
                  music_track=None, music_volume=0.15,
                  whisper_model="base", watermark="",
                  silence_removal=False, add_hook=False, webhook_url="",
-                 visual_enhance="none"):
-        self.job_id          = job_id
-        self.jobs            = jobs
-        self.openai_key      = openai_key
-        self.subtitle_style  = subtitle_style
-        self.face_tracking   = face_tracking
-        self.smart_zoom      = smart_zoom
-        self.music_track     = music_track
-        self.music_volume    = music_volume
-        self.whisper_model   = whisper_model
-        self.watermark       = watermark
-        self.silence_removal = silence_removal
-        self.add_hook        = add_hook
-        self.webhook_url     = webhook_url
-        self.visual_enhance  = visual_enhance
-        self.job_dir         = os.path.join(OUTPUT_DIR, job_id)
+                 visual_enhance="none",
+                 enable_subtitles=True, speed_factor=1.0):
+        self.job_id           = job_id
+        self.jobs             = jobs
+        self.openai_key       = openai_key
+        self.subtitle_style   = subtitle_style
+        self.face_tracking    = face_tracking
+        self.smart_zoom       = smart_zoom
+        self.music_track      = music_track
+        self.music_volume     = music_volume
+        self.whisper_model    = whisper_model
+        self.watermark        = watermark
+        self.silence_removal  = silence_removal
+        self.add_hook         = add_hook
+        self.webhook_url      = webhook_url
+        self.visual_enhance   = visual_enhance
+        self.enable_subtitles = enable_subtitles
+        self.speed_factor     = max(1.0, float(speed_factor))
+        self.job_dir          = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(self.job_dir, exist_ok=True)
 
     # ── Logging ───────────────────────────────────────────────────────────────
@@ -97,22 +104,26 @@ class VideoProcessor:
                       music_track=None, music_volume=0.15,
                       whisper_model="base", watermark="",
                       silence_removal=False, add_hook=False, webhook_url="",
-                      visual_enhance="none", is_local_file=False):
+                      visual_enhance="none",
+                      enable_subtitles=True, speed_factor=1.0,
+                      is_local_file=False):
         loop = asyncio.get_event_loop()
         try:
-            self.subtitle_style  = subtitle_style
-            self.face_tracking   = face_tracking
-            self.smart_zoom      = smart_zoom
-            self.music_track     = music_track
-            self.music_volume    = music_volume
-            self.whisper_model   = whisper_model
-            self.watermark       = watermark
-            self.silence_removal = silence_removal
-            self.add_hook        = add_hook
-            self.webhook_url     = webhook_url
-            self.visual_enhance  = visual_enhance
+            self.subtitle_style   = subtitle_style
+            self.face_tracking    = face_tracking
+            self.smart_zoom       = smart_zoom
+            self.music_track      = music_track
+            self.music_volume     = music_volume
+            self.whisper_model    = whisper_model
+            self.watermark        = watermark
+            self.silence_removal  = silence_removal
+            self.add_hook         = add_hook
+            self.webhook_url      = webhook_url
+            self.visual_enhance   = visual_enhance
+            self.enable_subtitles = enable_subtitles
+            self.speed_factor     = max(1.0, float(speed_factor))
             # Offset used to remap original-video timestamps to trimmed-file timestamps
-            self.video_offset    = float(video_start) if video_start else 0.0
+            self.video_offset     = float(video_start) if video_start else 0.0
 
             # ── 1. Download / Local file ──────────────────────────────────
             if is_local_file:
@@ -337,17 +348,37 @@ class VideoProcessor:
 
         src_w, src_h = ff_mod.probe_video_dimensions(video_path)
 
-        face_rect = None
+        # ── Feature 3 : zoom dynamique multi-frames ─────────────────────
+        face_trajectory = None
         if self.face_tracking and src_w and src_h:
-            self._log(f"  Clip {index+1} — détection de visage...")
-            face_rect = ff_mod.detect_face_crop(video_path, seek_start, seek_end, src_w, src_h)
+            if self.smart_zoom:
+                self._log(f"  Clip {index+1} — détection de trajectoire visage (smart zoom)...")
+                face_trajectory = ff_mod.detect_face_trajectory(
+                    video_path, seek_start, seek_end, src_w, src_h)
+                if face_trajectory:
+                    self._log(f"  Clip {index+1} — {len(face_trajectory)} positions détectées")
+                else:
+                    self._log(f"  Clip {index+1} — trajectoire vide, fallback statique")
+            else:
+                self._log(f"  Clip {index+1} — détection de visage (statique)...")
+                # fallback: utilise l'ancienne détection statique (médiane)
+                face_rect = ff_mod.detect_face_crop(video_path, seek_start, seek_end, src_w, src_h)
+                if face_rect:
+                    # Convertir en trajectory mono-point pour réutiliser build_dynamic_crop_filter
+                    face_trajectory = [{"t": 0.0, "cx": face_rect[0] + face_rect[2] // 2,
+                                        "cy": face_rect[1] + face_rect[3] // 2}]
 
-        crop_filter = ff_mod.build_crop_filter(src_w, src_h, face_rect, self.smart_zoom)
+        crop_filter = ff_mod.build_dynamic_crop_filter(
+            src_w, src_h, face_trajectory, self.smart_zoom)
 
-        # Render subtitle PNGs (fast — Pillow only, no video decode)
-        words = self._extract_words(transcript, start, end)
-        subs  = self._render_subtitle_pngs(words, start, index, tgt_w)
-        self._log(f"  Clip {index+1} — {len(subs)} sous-titres, single-pass encode...")
+        # ── Feature 1 : sous-titres optionnels ──────────────────────────
+        if getattr(self, "enable_subtitles", True):
+            words = self._extract_words(transcript, start, end)
+            subs  = self._render_subtitle_pngs(words, start, index, tgt_w)
+        else:
+            subs = []
+        sub_label = f"{len(subs)} sous-titres" if subs else "sans sous-titres"
+        self._log(f"  Clip {index+1} — {sub_label}, single-pass encode...")
 
         # Optional hook intro overlay
         if self.add_hook:
@@ -362,11 +393,17 @@ class VideoProcessor:
         sub_out = clip_path if not self.music_track else \
                   os.path.join(self.job_dir, f"nosub_{index}.mp4")
 
+        # ── Feature 2 : accélération ─────────────────────────────────────
+        speed = getattr(self, "speed_factor", 1.0)
+        if speed > 1.0:
+            self._log(f"  Clip {index+1} — vitesse x{speed:.0f}")
+
         ok = ff_mod.make_clip_onepass(
             video_path, seek_start, seek_end, subs, crop_filter,
             sub_out, self.job_dir, index,
             watermark=self.watermark, tgt_h=tgt_h,
-            visual_enhance=self.visual_enhance, log_fn=self._log
+            visual_enhance=self.visual_enhance,
+            speed_factor=speed, log_fn=self._log
         )
         if not ok:
             self._log(f"  Clip {index+1} — ⚠️ encode échoué")
@@ -574,56 +611,4 @@ class VideoProcessor:
                 "/bestvideo+bestaudio"
                 "/best"
             ),
-            "format_sort":         ["res:1080"],
-            "merge_output_format": "mp4",
-            "outtmpl":             cache_path,
-            "quiet":               True,
-            "no_warnings":         False,
-            "logger":              _YtdlLogger(self._log),
-        }
-
-        # Partial download — only fetch the requested time range
-        if video_start is not None and video_end is not None:
-            def _sec_to_hhmmss(s):
-                h = int(s // 3600); m = int((s % 3600) // 60); sec = int(s % 60)
-                return f"{h:02d}:{m:02d}:{sec:02d}"
-            section = f"*{_sec_to_hhmmss(video_start)}-{_sec_to_hhmmss(video_end)}"
-            ydl_opts["download_sections"]      = section
-            ydl_opts["force_keyframes_at_cuts"] = True
-            self._log(f"⚡ Téléchargement partiel : {section}")
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            meta = ydl.extract_info(url, download=True)
-
-        title   = meta.get("title", "Untitled")
-        heatmap = meta.get("heatmap") or []
-        self._log(
-            f"yt-dlp format selectionne : {meta.get('format_id','?')} | "
-            f"{meta.get('width','?')}x{meta.get('height','?')} | "
-            f"vcodec={meta.get('vcodec','?')}"
-        )
-
-        # Persist metadata for cache hits
-        try:
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump({"title": title, "heatmap": heatmap}, f, ensure_ascii=False)
-        except Exception:
-            pass
-
-        return cache_path, title, heatmap
-
-    # ── Webhook ────────────────────────────────────────────────────────────────
-
-    def _fire_webhook(self, webhook_url, job_id, clip_count):
-        import urllib.request, json
-        try:
-            payload = json.dumps({"event": "clips_ready", "job_id": job_id,
-                                  "clip_count": clip_count}).encode()
-            req = urllib.request.Request(
-                webhook_url, data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
-        except Exception:
-            pass
+            "format_s

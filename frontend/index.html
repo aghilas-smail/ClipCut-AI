@@ -247,6 +247,11 @@
       <!-- ── Feature toggles ──────────────────────────────────────────── -->
       <div style="margin-top:16px;display:flex;gap:11px;flex-wrap:wrap;">
         <label class="toggle-wrap">
+          <input type="checkbox" id="enable-subtitles" checked>
+          <span class="toggle-slider"></span>
+          <span style="font-size:.84rem;font-weight:600;">💬 Sous-titres</span>
+        </label>
+        <label class="toggle-wrap">
           <input type="checkbox" id="face-tracking">
           <span class="toggle-slider"></span>
           <span style="font-size:.84rem;font-weight:600;">🎯 Suivi visage</span>
@@ -254,7 +259,7 @@
         <label class="toggle-wrap">
           <input type="checkbox" id="smart-zoom">
           <span class="toggle-slider"></span>
-          <span style="font-size:.84rem;font-weight:600;">🔍 Zoom intelligent</span>
+          <span style="font-size:.84rem;font-weight:600;">🔍 Zoom dynamique</span>
         </label>
         <label class="toggle-wrap">
           <input type="checkbox" id="silence-removal">
@@ -266,6 +271,28 @@
           <span class="toggle-slider"></span>
           <span style="font-size:.84rem;font-weight:600;">🪝 Hook intro</span>
         </label>
+      </div>
+
+      <!-- ── Vitesse ───────────────────────────────────────────────────── -->
+      <div style="margin-top:14px;">
+        <label style="display:block;margin-bottom:8px;">⚡ Vitesse de lecture</label>
+        <div style="display:flex;gap:8px;" id="speed-picker">
+          <div class="style-card active" data-speed="1" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🐢</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x1 Normal</div>
+          </div>
+          <div class="style-card" data-speed="2" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🐇</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x2 Rapide</div>
+          </div>
+          <div class="style-card" data-speed="3" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🚀</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x3 Turbo</div>
+          </div>
+        </div>
       </div>
 
       <!-- ── Language ──────────────────────────────────────────────────── -->
@@ -468,49 +495,4 @@
     <div class="feature">
       <div class="feature-icon">🪝</div>
       <h3>Hook intro</h3>
-      <p>Génère une phrase d'accroche affichée en grand dans les 2 premières secondes.</p>
-    </div>
-  </div>
-
-  <!-- Video player modal -->
-  <div class="player-overlay" id="player-overlay">
-    <div class="player-box">
-      <div class="player-header">
-        <span class="player-title" id="player-clip-title">Clip</span>
-        <button class="player-close" onclick="closePlayer()">✕</button>
-      </div>
-      <video id="player-video" controls playsinline></video>
-      <div class="player-footer">
-        <button class="player-dl-btn" onclick="playerDownload()">⬇️ Télécharger ce clip</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Trim modal -->
-  <div class="trim-overlay" id="trim-overlay">
-    <div class="trim-box">
-      <div class="trim-title">✂️ Ajuster le découpage</div>
-      <div class="trim-info" id="trim-info">
-        Modifie le début et la fin de ce clip (en secondes, ± par rapport à l'original).
-      </div>
-      <div class="trim-row">
-        <div class="trim-field">
-          <label>Décalage début (s)</label>
-          <input type="number" id="trim-start-offset" value="0" step="0.5" />
-        </div>
-        <div class="trim-field">
-          <label>Décalage fin (s)</label>
-          <input type="number" id="trim-end-offset" value="0" step="0.5" />
-        </div>
-      </div>
-      <div class="trim-btns">
-        <button class="trim-cancel-btn" onclick="closeTrim()">Annuler</button>
-        <button class="trim-apply-btn" onclick="applyTrim()">Appliquer le trim</button>
-      </div>
-    </div>
-  </div>
-
-  <script src="/js/app.js" defer></script>
-
-</body>
-</html>
+      <p>Génère une phrase d'accroche affichée en grand dans les 2 première
