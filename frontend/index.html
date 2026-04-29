@@ -247,6 +247,11 @@
       <!-- ── Feature toggles ──────────────────────────────────────────── -->
       <div style="margin-top:16px;display:flex;gap:11px;flex-wrap:wrap;">
         <label class="toggle-wrap">
+          <input type="checkbox" id="enable-subtitles" checked>
+          <span class="toggle-slider"></span>
+          <span style="font-size:.84rem;font-weight:600;">💬 Sous-titres</span>
+        </label>
+        <label class="toggle-wrap">
           <input type="checkbox" id="face-tracking">
           <span class="toggle-slider"></span>
           <span style="font-size:.84rem;font-weight:600;">🎯 Suivi visage</span>
@@ -254,7 +259,7 @@
         <label class="toggle-wrap">
           <input type="checkbox" id="smart-zoom">
           <span class="toggle-slider"></span>
-          <span style="font-size:.84rem;font-weight:600;">🔍 Zoom intelligent</span>
+          <span style="font-size:.84rem;font-weight:600;">🔍 Zoom dynamique</span>
         </label>
         <label class="toggle-wrap">
           <input type="checkbox" id="silence-removal">
@@ -266,6 +271,28 @@
           <span class="toggle-slider"></span>
           <span style="font-size:.84rem;font-weight:600;">🪝 Hook intro</span>
         </label>
+      </div>
+
+      <!-- ── Vitesse ───────────────────────────────────────────────────── -->
+      <div style="margin-top:14px;">
+        <label style="display:block;margin-bottom:8px;">⚡ Vitesse de lecture</label>
+        <div style="display:flex;gap:8px;" id="speed-picker">
+          <div class="style-card active" data-speed="1" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🐢</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x1 Normal</div>
+          </div>
+          <div class="style-card" data-speed="2" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🐇</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x2 Rapide</div>
+          </div>
+          <div class="style-card" data-speed="3" onclick="selectSpeed(this)"
+               style="text-align:center;padding:10px 18px;flex:1;">
+            <div style="font-size:1.2rem;">🚀</div>
+            <div style="font-size:.75rem;margin-top:4px;font-weight:600;">x3 Turbo</div>
+          </div>
+        </div>
       </div>
 
       <!-- ── Language ──────────────────────────────────────────────────── -->

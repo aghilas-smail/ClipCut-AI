@@ -6,6 +6,10 @@ New features vs v2 monolith:
   3. Transcript disk cache     — skip Whisper on repeated requests for same video
   4. Whisper RAM cache + mmap  — via transcriber module (loaded once, reused)
   5. Server startup preload    — via transcriber.preload() in main.py
+feat/hostfix1 additions:
+  6. enable_subtitles          — désactiver complètement les sous-titres
+  7. speed_factor              — accélération x1 / x2 / x3 via setpts + atempo
+  8. Smart zoom dynamique      — face tracking multi-frames + crop expression ffmpeg
 """
 import asyncio, os, shutil, time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,22 +37,25 @@ class VideoProcessor:
                  music_track=None, music_volume=0.15,
                  whisper_model="base", watermark="",
                  silence_removal=False, add_hook=False, webhook_url="",
-                 visual_enhance="none"):
-        self.job_id          = job_id
-        self.jobs            = jobs
-        self.openai_key      = openai_key
-        self.subtitle_style  = subtitle_style
-        self.face_tracking   = face_tracking
-        self.smart_zoom      = smart_zoom
-        self.music_track     = music_track
-        self.music_volume    = music_volume
-        self.whisper_model   = whisper_model
-        self.watermark       = watermark
-        self.silence_removal = silence_removal
-        self.add_hook        = add_hook
-        self.webhook_url     = webhook_url
-        self.visual_enhance  = visual_enhance
-        self.job_dir         = os.path.join(OUTPUT_DIR, job_id)
+                 visual_enhance="none",
+                 enable_subtitles=True, speed_factor=1.0):
+        self.job_id           = job_id
+        self.jobs             = jobs
+        self.openai_key       = openai_key
+        self.subtitle_style   = subtitle_style
+        self.face_tracking    = face_tracking
+        self.smart_zoom       = smart_zoom
+        self.music_track      = music_track
+        self.music_volume     = music_volume
+        self.whisper_model    = whisper_model
+        self.watermark        = watermark
+        self.silence_removal  = silence_removal
+        self.add_hook         = add_hook
+        self.webhook_url      = webhook_url
+        self.visual_enhance   = visual_enhance
+        self.enable_subtitles = enable_subtitles
+        self.speed_factor     = max(1.0, float(speed_factor))
+        self.job_dir          = os.path.join(OUTPUT_DIR, job_id)
         os.makedirs(self.job_dir, exist_ok=True)
 
     # ── Logging ───────────────────────────────────────────────────────────────
@@ -97,22 +104,26 @@ class VideoProcessor:
                       music_track=None, music_volume=0.15,
                       whisper_model="base", watermark="",
                       silence_removal=False, add_hook=False, webhook_url="",
-                      visual_enhance="none", is_local_file=False):
+                      visual_enhance="none",
+                      enable_subtitles=True, speed_factor=1.0,
+                      is_local_file=False):
         loop = asyncio.get_event_loop()
         try:
-            self.subtitle_style  = subtitle_style
-            self.face_tracking   = face_tracking
-            self.smart_zoom      = smart_zoom
-            self.music_track     = music_track
-            self.music_volume    = music_volume
-            self.whisper_model   = whisper_model
-            self.watermark       = watermark
-            self.silence_removal = silence_removal
-            self.add_hook        = add_hook
-            self.webhook_url     = webhook_url
-            self.visual_enhance  = visual_enhance
+            self.subtitle_style   = subtitle_style
+            self.face_tracking    = face_tracking
+            self.smart_zoom       = smart_zoom
+            self.music_track      = music_track
+            self.music_volume     = music_volume
+            self.whisper_model    = whisper_model
+            self.watermark        = watermark
+            self.silence_removal  = silence_removal
+            self.add_hook         = add_hook
+            self.webhook_url      = webhook_url
+            self.visual_enhance   = visual_enhance
+            self.enable_subtitles = enable_subtitles
+            self.speed_factor     = max(1.0, float(speed_factor))
             # Offset used to remap original-video timestamps to trimmed-file timestamps
-            self.video_offset    = float(video_start) if video_start else 0.0
+            self.video_offset     = float(video_start) if video_start else 0.0
 
             # ── 1. Download / Local file ──────────────────────────────────
             if is_local_file:
@@ -187,7 +198,8 @@ class VideoProcessor:
                 self._update("processing", 20,
                              f"Transcription faster-whisper ({whisper_model}){dur_label}...")
                 audio_path, hot_offsets = self._prepare_audio(
-                    video_path, hot_segs, video_start, video_end)
+                    video_path, hot_segs, video_start, video_end,
+                    max_clips=max_clips, clip_duration=clip_duration)
                 try:
                     transcript = trans_mod.transcribe_faster(
                         audio_path, None if language == "auto" else language,
@@ -264,14 +276,20 @@ class VideoProcessor:
             results = sorted(results, key=lambda x: x[0])
 
             clips = []
+            speed = getattr(self, "speed_factor", 1.0)
             for i, clip_path in results:
                 s, e, t, sc = clips_meta[i]
+                # Durée réelle du fichier (ffprobe) — tient compte du speed_factor
+                # et des coupes aux keyframes. Fallback sur (e-s)/speed si ffprobe échoue.
+                actual_dur = ff_mod.get_video_duration(clip_path)
+                if actual_dur <= 0:
+                    actual_dur = (e - s) / speed
                 clips.append({
                     "index":        i,
                     "title":        t,
                     "start":        s,
                     "end":          e,
-                    "duration":     round(e - s, 1),
+                    "duration":     round(actual_dur, 1),
                     "path":         clip_path,
                     "score":        sc,
                     "caption":      captions[i] if i < len(captions) else "",
@@ -295,18 +313,36 @@ class VideoProcessor:
 
     # ── Audio preparation ──────────────────────────────────────────────────────
 
-    def _prepare_audio(self, video_path, hot_segs, video_start, video_end):
-        """Returns (audio_path, hot_offsets). audio_path == video_path means full video."""
+    def _prepare_audio(self, video_path, hot_segs, video_start, video_end,
+                        max_clips=5, clip_duration=60):
+        """Returns (audio_path, hot_offsets). audio_path == video_path means full video.
+
+        Hot audio extraction is only used when the total hot coverage is large
+        enough to contain max_clips non-overlapping clips.  Otherwise we fall
+        through to full-video transcription so GPT can pick diverse moments
+        instead of being confined to a small hot zone.
+        """
         import subprocess
         if hot_segs:
             total_hot = sum(e - s for s, e in hot_segs)
-            self._log(f"⚡ Extraction audio intelligente : {len(hot_segs)} zone(s), {total_hot:.0f}s")
-            extracted, offsets = heat_mod.extract_hot_audio(
-                video_path, hot_segs, self.job_dir, log_fn=self._log)
-            if extracted and offsets:
-                self._log(f"   Audio hot extrait → {os.path.basename(extracted)}")
-                return extracted, offsets
-            self._log("   ⚠️ Extraction hot échouée — transcription complète")
+            # Minimum coverage needed to produce max_clips distinct clips
+            min_needed = max_clips * clip_duration * 0.6
+            if total_hot < min_needed:
+                self._log(
+                    f"⚠️ Heatmap couvre {total_hot:.0f}s < {min_needed:.0f}s nécessaires "
+                    f"pour {max_clips} clips distincts — transcription complète activée"
+                )
+                # hot_segs still passed to GPT as soft preference; skip hot extraction
+            else:
+                self._log(
+                    f"⚡ Extraction audio intelligente : {len(hot_segs)} zone(s), "
+                    f"{total_hot:.0f}s (coverage suffisant pour {max_clips} clips)")
+                extracted, offsets = heat_mod.extract_hot_audio(
+                    video_path, hot_segs, self.job_dir, log_fn=self._log)
+                if extracted and offsets:
+                    self._log(f"   Audio hot extrait → {os.path.basename(extracted)}")
+                    return extracted, offsets
+                self._log("   ⚠️ Extraction hot échouée — transcription complète")
 
         elif video_start is not None and video_end is not None and video_end > video_start:
             tmp = os.path.join(self.job_dir, "partial_audio.m4a")
@@ -337,17 +373,37 @@ class VideoProcessor:
 
         src_w, src_h = ff_mod.probe_video_dimensions(video_path)
 
-        face_rect = None
+        # ── Feature 3 : zoom dynamique multi-frames ─────────────────────
+        face_trajectory = None
         if self.face_tracking and src_w and src_h:
-            self._log(f"  Clip {index+1} — détection de visage...")
-            face_rect = ff_mod.detect_face_crop(video_path, seek_start, seek_end, src_w, src_h)
+            if self.smart_zoom:
+                self._log(f"  Clip {index+1} — détection de trajectoire visage (smart zoom)...")
+                face_trajectory = ff_mod.detect_face_trajectory(
+                    video_path, seek_start, seek_end, src_w, src_h)
+                if face_trajectory:
+                    self._log(f"  Clip {index+1} — {len(face_trajectory)} positions détectées")
+                else:
+                    self._log(f"  Clip {index+1} — trajectoire vide, fallback statique")
+            else:
+                self._log(f"  Clip {index+1} — détection de visage (statique)...")
+                # fallback: utilise l'ancienne détection statique (médiane)
+                face_rect = ff_mod.detect_face_crop(video_path, seek_start, seek_end, src_w, src_h)
+                if face_rect:
+                    # Convertir en trajectory mono-point pour réutiliser build_dynamic_crop_filter
+                    face_trajectory = [{"t": 0.0, "cx": face_rect[0] + face_rect[2] // 2,
+                                        "cy": face_rect[1] + face_rect[3] // 2}]
 
-        crop_filter = ff_mod.build_crop_filter(src_w, src_h, face_rect, self.smart_zoom)
+        crop_filter = ff_mod.build_dynamic_crop_filter(
+            src_w, src_h, face_trajectory, self.smart_zoom)
 
-        # Render subtitle PNGs (fast — Pillow only, no video decode)
-        words = self._extract_words(transcript, start, end)
-        subs  = self._render_subtitle_pngs(words, start, index, tgt_w)
-        self._log(f"  Clip {index+1} — {len(subs)} sous-titres, single-pass encode...")
+        # ── Feature 1 : sous-titres optionnels ──────────────────────────
+        if getattr(self, "enable_subtitles", True):
+            words = self._extract_words(transcript, start, end)
+            subs  = self._render_subtitle_pngs(words, start, index, tgt_w)
+        else:
+            subs = []
+        sub_label = f"{len(subs)} sous-titres" if subs else "sans sous-titres"
+        self._log(f"  Clip {index+1} — {sub_label}, single-pass encode...")
 
         # Optional hook intro overlay
         if self.add_hook:
@@ -362,11 +418,17 @@ class VideoProcessor:
         sub_out = clip_path if not self.music_track else \
                   os.path.join(self.job_dir, f"nosub_{index}.mp4")
 
+        # ── Feature 2 : accélération ─────────────────────────────────────
+        speed = getattr(self, "speed_factor", 1.0)
+        if speed > 1.0:
+            self._log(f"  Clip {index+1} — vitesse x{speed:.0f}")
+
         ok = ff_mod.make_clip_onepass(
             video_path, seek_start, seek_end, subs, crop_filter,
             sub_out, self.job_dir, index,
             watermark=self.watermark, tgt_h=tgt_h,
-            visual_enhance=self.visual_enhance, log_fn=self._log
+            visual_enhance=self.visual_enhance,
+            speed_factor=speed, log_fn=self._log
         )
         if not ok:
             self._log(f"  Clip {index+1} — ⚠️ encode échoué")
@@ -383,10 +445,11 @@ class VideoProcessor:
                 sub_out = jc_path
                 self._log(f"  Clip {index+1} — silences supprimés")
 
-        # Music mix
+        # Music mix — durée réelle après speed_factor
+        actual_clip_dur = ff_mod.get_video_duration(sub_out) or (end - start) / speed
         if (self.music_track and os.path.exists(self.music_track)
                 and os.path.exists(sub_out) and os.path.getsize(sub_out) > 1000):
-            ff_mod.mix_music(sub_out, clip_path, end - start,
+            ff_mod.mix_music(sub_out, clip_path, actual_clip_dur,
                              self.music_track, self.music_volume)
             try: os.remove(sub_out)
             except OSError: pass
@@ -529,19 +592,19 @@ class VideoProcessor:
             self._log("Cache vidéo trouvé (métadonnées absentes, heatmap ignoré)")
             return cache_path, video_id, []
 
-        # ── Runtime detection (JS fallback seulement — player_client=android est prioritaire) ──
+        # ── Runtime detection ─────────────────────────────────────────────
+        # Deno is yt-dlp's preferred JS runtime for solving YouTube n-challenges.
+        # Falls back to node if deno is not installed.
         deno_bin = shutil.which("deno") or ""
-        node_bin = shutil.which("node") or shutil.which("nodejs") or ""
+        node_bin = shutil.which("node") or shutil.which("nodejs") or "node"
         if deno_bin:
+            self._log(f"deno détecté : {deno_bin}")
             js_runtimes = [f"deno:{deno_bin}"]
-        elif node_bin:
-            js_runtimes = [f"node:{node_bin}"]
         else:
-            js_runtimes = []
+            self._log("⚠️ deno absent — utilisation de node comme fallback JS runtime")
+            js_runtimes = [f"node:{node_bin}"]
 
-        # ffmpeg_location : utiliser uniquement ce que le PATH fournit
-        # BUG FIX : ne pas forcer "/usr/bin/ffmpeg" (chemin Linux invalide sur Windows)
-        ffmpeg_bin = shutil.which("ffmpeg")  # None si absent du PATH
+        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 
         # ── yt-dlp logger (surfaces relevant lines into the job log) ──────
         class _YtdlLogger:
@@ -559,15 +622,15 @@ class VideoProcessor:
                 self._fn(f"[yt-dlp] ❌ {msg[:250]}")
 
         # ── yt-dlp options ────────────────────────────────────────────────
-        # player_client=android : évite les n-challenges YouTube sans JS runtime
-        # js_runtimes en fallback seulement si android client échoue
-        # socket_timeout=30 : évite les blocages réseau indéfinis (BUG FIX)
-        extractor_args: dict = {"player_client": ["web", "android"]}
-        if js_runtimes:
-            extractor_args["js_runtimes"] = js_runtimes
-
+        # Format cascade: prefer 1080p, accept 720p, fall back to best available.
+        # No vcodec:h264 in format_sort — YouTube serves 1080p in VP9/AV1 since 2022;
+        # preferring h264 would force a pre-merged 360p stream (format 18).
+        # ffmpeg re-encodes to H.264 during clip generation anyway.
         ydl_opts = {
-            "extractor_args":      {"youtube": extractor_args},
+            "extractor_args": {
+                "youtube": {"js_runtimes": js_runtimes},
+            },
+            "ffmpeg_location":     ffmpeg_bin,
             "format": (
                 "bestvideo[height>=1080]+bestaudio"
                 "/bestvideo[height>=720]+bestaudio"
@@ -579,11 +642,8 @@ class VideoProcessor:
             "outtmpl":             cache_path,
             "quiet":               True,
             "no_warnings":         False,
-            "socket_timeout":      30,   # BUG FIX : timeout réseau pour éviter blocage
             "logger":              _YtdlLogger(self._log),
         }
-        if ffmpeg_bin:
-            ydl_opts["ffmpeg_location"] = ffmpeg_bin  # BUG FIX : ne définir que si trouvé
 
         # Partial download — only fetch the requested time range
         if video_start is not None and video_end is not None:
