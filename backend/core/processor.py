@@ -495,61 +495,42 @@ class VideoProcessor:
         if not words:
             return []
 
-        # Cap word count to 50 max — ffmpeg chains N overlay ops in series:
-        # 167 overlays makes the filtergraph huge (hang + EAGAIN on parallel clips).
-        # 50 words on a 45s clip = one subtitle every ~0.9s, perfectly readable.
-        MAX_WORDS = 50
-        if len(words) > MAX_WORDS:
-            step  = len(words) / MAX_WORDS
-            words = [words[int(i * step)] for i in range(MAX_WORDS)]
-
-        # After thinning, extend each word's natural end to bridge the gap to the
-        # next selected word (when the person is still talking between the two).
-        # Without this, the subtitle hides mid-speech because skipped words have no PNG.
-        MAX_BRIDGE_GAP = 2.0   # seconds — beyond this it's a real pause, don't bridge
-        for i in range(len(words) - 1):
-            gap = words[i + 1]["start"] - words[i]["end"]
-            if gap < MAX_BRIDGE_GAP:
-                words[i]["_display_end"] = words[i + 1]["start"]
-            else:
-                words[i]["_display_end"] = words[i]["end"] + 0.4
-        if words:
-            words[-1]["_display_end"] = words[-1]["end"] + 0.4
-
         style           = self.subtitle_style
         WORDS_PER_GROUP = 1 if style in ("oneword", "pop", "neon") else 4
-        # A pause must be longer than this to hide the subtitle between two words.
-        # 0.80s covers natural speech rhythm; 0.40 was too aggressive.
-        SILENCE_GAP     = 0.80
-        # Buffer after the last word of a group before hiding
-        WORD_BUFFER     = 0.30
 
-        groups = [words[i:i + WORDS_PER_GROUP]
-                  for i in range(0, len(words), WORDS_PER_GROUP)]
+        # Form groups from ALL words first (V4 approach).
+        # Thinning at word level (previous approach) caused the highlight to lag
+        # behind the voice: each selected word spanned 2-3 spoken words, so the
+        # active-word marker stayed stuck while the speaker moved on.
+        all_groups = [words[i:i + WORDS_PER_GROUP]
+                      for i in range(0, len(words), WORDS_PER_GROUP)]
+
+        # Cap at GROUP level to stay within ffmpeg overlay budget.
+        # 60 overlays = 15 groups of 4 — well below the 167-overlay hang threshold.
+        # Timing within every kept group is V4-accurate (consecutive words).
+        MAX_OVERLAYS = 60
+        max_groups   = max(1, MAX_OVERLAYS // max(WORDS_PER_GROUP, 1))
+        if len(all_groups) > max_groups:
+            step   = len(all_groups) / max_groups
+            groups = [all_groups[int(i * step)] for i in range(max_groups)]
+        else:
+            groups = all_groups
+
         result = []
         for g_idx, group in enumerate(groups):
             group_words = [w["word"] for w in group]
             for w_idx, word in enumerate(group):
-                t0       = max(0.0, word["start"] - clip_start)
-                word_end = word["end"] - clip_start
+                t0 = max(0.0, word["start"] - clip_start)
 
                 if w_idx < len(group) - 1:
-                    # Next word in same group
-                    next_start = group[w_idx + 1]["start"] - clip_start
-                    gap = next_start - word_end
-                    if gap < SILENCE_GAP:
-                        t1 = next_start          # flow straight to next word
-                    else:
-                        t1 = word_end + WORD_BUFFER   # real pause → hide briefly
+                    # Next word in same group — flow straight (V4 logic)
+                    t1 = max(t0 + 0.05, group[w_idx + 1]["start"] - clip_start)
                 elif g_idx < len(groups) - 1:
-                    # Last word in group — use the extended display time that bridges
-                    # the gap to the next group (covers any skipped words in between)
-                    t1 = word["_display_end"] - clip_start
+                    # Last word of group — hold until first word of next kept group
+                    t1 = max(t0 + 0.05, groups[g_idx + 1][0]["start"] - clip_start)
                 else:
                     # Very last word of the clip
-                    t1 = word["_display_end"] - clip_start
-
-                t1 = max(t0 + 0.05, t1)
+                    t1 = max(t0 + 0.05, word["end"] - clip_start)
 
                 png_path = os.path.join(self.job_dir,
                                         f"sub_{clip_index}_g{g_idx}_w{w_idx}.png")
