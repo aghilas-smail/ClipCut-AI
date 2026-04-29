@@ -14,6 +14,7 @@ def select_moments(openai_key, transcript, max_clips, clip_duration,
     # Minimum 45 s so every clip is a self-contained idea, never a fragment.
     # Cap at (clip_duration - 5) so it cannot exceed the max.
     MIN_DURATION = min(max(45, clip_duration // 2), max(15, clip_duration - 5))
+    MIN_GAP = max(30, clip_duration // 2)
 
     segments_info = [
         {"start": round(s["start"], 1), "end": round(s["end"], 1), "text": s["text"].strip()}
@@ -29,8 +30,9 @@ def select_moments(openai_key, transcript, max_clips, clip_duration,
             for s, e in hot_segments
         )
         hot_hint = (
-            f"\nIMPORTANT: The following time ranges are the MOST REPLAYED parts "
-            f"(YouTube heatmap): {ranges}. Strongly prefer clips from these ranges."
+            f"\nHINT: The following time ranges are the MOST REPLAYED parts "
+            f"(YouTube heatmap): {ranges}. Prefer moments near these when content quality "
+            f"is equal, but NEVER sacrifice clip diversity or content completeness for this."
         )
 
     prompt = (
@@ -40,6 +42,10 @@ def select_moments(openai_key, transcript, max_clips, clip_duration,
         f"- Minimum: {MIN_DURATION}s — never produce a shorter clip\n"
         f"- Maximum: {clip_duration}s\n"
         f"- Ideal range: {MIN_DURATION}s to {clip_duration}s\n\n"
+        f"DIVERSITY RULES (critical):\n"
+        f"- Each clip must start at least {MIN_GAP}s after the previous clip start.\n"
+        f"- Spread clips across the ENTIRE transcript, not clustered in one zone.\n"
+        f"- No overlap between clips.\n\n"
         f"CONTENT RULES (most important):\n"
         f"- Each clip must cover ONE complete idea from A to Z.\n"
         f"- Start exactly where the idea/argument/story BEGINS, not in the middle.\n"
@@ -48,7 +54,6 @@ def select_moments(openai_key, transcript, max_clips, clip_duration,
         f"the full point without needing context from outside the clip.\n"
         f"- Prefer moments with a hook (surprising fact, question, bold claim) "
         f"at the start, and a satisfying payoff or punchline at the end.\n"
-        f"- No overlap between clips.\n\n"
         f"For each clip give a viral_score (1-10) based on standalone value.{hot_hint}\n\n"
         f"Transcript: {json.dumps(segments_info, ensure_ascii=False)}\n\n"
         f"Reply ONLY with JSON: "
@@ -59,20 +64,30 @@ def select_moments(openai_key, transcript, max_clips, clip_duration,
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"}, temperature=0.5,
+        response_format={"type": "json_object"}, temperature=0.6,
     )
-    result = []
-    for c in json.loads(response.choices[0].message.content).get("clips", [])[:max_clips]:
+    raw_clips = json.loads(response.choices[0].message.content).get("clips", [])
+    result     = []
+    last_start = -MIN_GAP
+    for c in sorted(raw_clips, key=lambda x: x["start"])[:max_clips * 2]:
         s, e, t = c["start"], c["end"], c["title"]
         score   = int(c.get("viral_score", 7))
+        if s - last_start < MIN_GAP and result:
+            if log_fn:
+                log_fn(f"   skip (trop proche) : {t[:40]} [{s:.0f}s]")
+            continue
         if e - s < MIN_DURATION:
             e = s + MIN_DURATION
         if e - s > clip_duration:
             e = s + clip_duration
         result.append((s, e, t, score))
+        last_start = s
+        if len(result) >= max_clips:
+            break
     if log_fn:
         durations = [round(e - s, 1) for s, e, _, _ in result]
-        log_fn(f"GPT selection: {len(result)} clip(s) — durations: {durations}s")
+        starts    = [round(s, 1) for s, _, _, _ in result]
+        log_fn(f"GPT selection: {len(result)} clips starts={starts}s durations={durations}s")
     return result
 
 

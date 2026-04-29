@@ -765,4 +765,16 @@
     // Ask for notification permission as soon as the page loads
     requestNotifPermission();
 
-    // ── Keyboard / click listeners ──────────────────────────────
+    // ── Keyboard / click listeners ─────────────────────────────────────────
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('player-overlay').addEventListener('click', function(e) {
+        if (e.target === this) closePlayer();
+      });
+      document.getElementById('trim-overlay').addEventListener('click', function(e) {
+        if (e.target === this) closeTrim();
+      });
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { closePlayer(); closeTrim(); }
+    });

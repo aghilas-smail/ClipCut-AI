@@ -185,4 +185,11 @@ async def process_batch(request: BatchRequest,
         background_tasks.add_task(
             _run_and_persist, processor,
             url, request.max_clips, request.clip_duration, request.language,
-      
+            subtitle_style  = request.subtitle_style,
+            whisper_model   = request.whisper_model,
+            watermark       = request.watermark,
+            silence_removal = request.silence_removal,
+            visual_enhance  = "none",
+        )
+        job_ids.append({"url": url, "job_id": job_id})
+    return {"jobs": job_ids}

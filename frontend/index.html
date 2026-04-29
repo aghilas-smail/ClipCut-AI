@@ -495,4 +495,49 @@
     <div class="feature">
       <div class="feature-icon">🪝</div>
       <h3>Hook intro</h3>
-      <p>Génère une phrase d'accroche affichée en grand dans les 2 première
+      <p>Génère une phrase d'accroche affichée en grand dans les 2 premières secondes.</p>
+    </div>
+  </div>
+
+  <!-- Video player modal -->
+  <div class="player-overlay" id="player-overlay">
+    <div class="player-box">
+      <div class="player-header">
+        <span class="player-title" id="player-clip-title">Clip</span>
+        <button class="player-close" onclick="closePlayer()">✕</button>
+      </div>
+      <video id="player-video" controls playsinline></video>
+      <div class="player-footer">
+        <button class="player-dl-btn" onclick="playerDownload()">⬇️ Télécharger ce clip</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trim modal -->
+  <div class="trim-overlay" id="trim-overlay">
+    <div class="trim-box">
+      <div class="trim-title">✂️ Ajuster le découpage</div>
+      <div class="trim-info" id="trim-info">
+        Modifie le début et la fin de ce clip (en secondes, ± par rapport à l'original).
+      </div>
+      <div class="trim-row">
+        <div class="trim-field">
+          <label>Décalage début (s)</label>
+          <input type="number" id="trim-start-offset" value="0" step="0.5" />
+        </div>
+        <div class="trim-field">
+          <label>Décalage fin (s)</label>
+          <input type="number" id="trim-end-offset" value="0" step="0.5" />
+        </div>
+      </div>
+      <div class="trim-btns">
+        <button class="trim-cancel-btn" onclick="closeTrim()">Annuler</button>
+        <button class="trim-apply-btn" onclick="applyTrim()">Appliquer le trim</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js" defer></script>
+
+</body>
+</html>
